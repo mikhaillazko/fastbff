@@ -118,9 +118,8 @@ class TransformerFieldInfo:
             if info.context is None:
                 raise BatchContextMissingError(
                     f'Transformer {self.original_func.__name__!r} declares a BatchArg but no '
-                    'validation context was provided. Call '
-                    '`populate_context_with_batch(Model, rows)` (or `executor.render(Model, rows)`) '
-                    'and pass the result as `context=` to `Model.model_validate`.',
+                    'validation context was provided. Use `validate_batch(Model, rows)` '
+                    'to validate a page of rows with a shared batch context.',
                 )
             ids = info.context[self.batch_key]
             keyword[self.batch_arg_name] = BatchArg(ids=frozenset(ids))

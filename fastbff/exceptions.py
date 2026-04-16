@@ -41,8 +41,9 @@ class QueryNotRegisteredError(FastBFFError, KeyError):
 class BatchContextMissingError(FastBFFError, RuntimeError):
     """Raised when a transformer with a ``BatchArg`` is invoked without a batching context.
 
-    Almost always means ``populate_context_with_batch`` (or ``executor.render``)
-    was not called, or ``model_validate`` was invoked without ``context=`` kwarg.
+    Almost always means a row was validated via plain ``Model.model_validate``
+    instead of :func:`validate_batch`, which builds the batch context and
+    threads it through ``context=``.
     """
 
 

@@ -40,7 +40,7 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Type check
-        run: uv run ty check src/fastbff
+        run: uv run ty check fastbff
 
       - name: Test
         run: uv run pytest

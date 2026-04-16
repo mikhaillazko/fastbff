@@ -13,6 +13,7 @@ from fastbff import Query
 from fastbff import QueryExecutor
 from fastbff import TransformerRegistry
 from fastbff import build_transform_annotated
+from fastbff import validate_batch
 
 
 @dataclass(frozen=True)
@@ -60,10 +61,9 @@ def test_render_issues_one_bulk_call_per_page() -> None:
         {'id': 3, 'owner': 10},  # duplicate id → still just one DB call
     ]
 
-    # Act — single call orchestrates Plan + Fetch + Merge.
     @injector.entrypoint
     def render_page() -> list[TeamDTO]:
-        return executor.render(TeamDTO, rows)
+        return validate_batch(TeamDTO, rows)
 
     results = render_page()
 
@@ -113,7 +113,7 @@ def test_render_with_function_signature_query() -> None:
 
     @injector.entrypoint
     def render_page() -> list[TeamDTO]:
-        return executor.render(TeamDTO, rows)
+        return validate_batch(TeamDTO, rows)
 
     results = render_page()
 

@@ -44,7 +44,7 @@ dev = [
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "src/fastbff",
+    "fastbff",
     "README.md",
     "LICENSE",
 ]
@@ -53,13 +53,13 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fastbff"]
+packages = ["fastbff"]
 exclude = [
     "**/*_test.py",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["src/fastbff", "."]
+testpaths = ["fastbff", "."]
 python_files = ["*_test.py"]
 
 [tool.ruff]
@@ -80,7 +80,7 @@ force-single-line = true
 quote-style = "single"
 
 [tool.ty.src]
-include = ["src/fastbff"]
+include = ["fastbff"]
 exclude = ["**/*_test.py"]
 
 [tool.ty.rules]

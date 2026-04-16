@@ -1,10 +1,6 @@
 from collections.abc import Callable
 from collections.abc import Iterable
-from collections.abc import Mapping
-from collections.abc import Sequence
 from typing import Any
-
-from pydantic import BaseModel as PydanticBaseModel
 
 from .query import Query
 from .query_cache import QueryCache
@@ -20,9 +16,6 @@ class QueryExecutor:
     - Entity-level for ``dict[K, V]`` queries with an IDs field:
       overlapping id sets share cached entries, only missing ids are
       fetched from the underlying query.
-
-    :meth:`render` is the one-call front-door: it does Plan → Fetch → Merge
-    for a Pydantic model in a single line.
     """
 
     def __init__(self, queries_registry: IQueriesRegistry) -> None:
@@ -94,22 +87,3 @@ class QueryExecutor:
             annotation.dict_value_type if annotation.dict_type_key is not None else None,
         )
         return self._cache.get_or_call(cache_key, lambda: annotation.call(**kwargs))
-
-    def render[M: PydanticBaseModel](
-        self,
-        model: type[M],
-        rows: Sequence[Mapping[str, Any]],
-    ) -> list[M]:
-        """One-call Plan → Merge.
-
-        Walks *rows* to collect batch ids into a Pydantic validation context,
-        then validates each row with that context. Transformers that use
-        ``BatchArg`` receive the full page's id set and are expected to call
-        ``executor.fetch(...)`` themselves — the query cache makes that a
-        single bulk call per page (first row fetches, subsequent rows hit the
-        entity-level cache).
-        """
-        from fastbff.transformer.batcher import populate_context_with_batch
-
-        context = populate_context_with_batch(model, rows)
-        return [model.model_validate(row, context=context) for row in rows]

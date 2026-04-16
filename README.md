@@ -8,7 +8,7 @@ monolithic systems.
 
 - **Declarative data composition** — describe the shape of a response once on a Pydantic
   model; fetching happens automatically.
-- **One-call orchestration** — `app.executor.render(Model, rows)` runs Plan + Fetch + Merge
+- **One-call orchestration** — `validate_batch(Model, rows)` runs Plan + Fetch + Merge
   for a whole page in a single line.
 - **Typed queries** — `Query[T]` carries its own return type, *or* register a plain
   function with a typed signature; both forms cache identically.
@@ -44,6 +44,7 @@ from fastbff import (
     Query,
     QueryExecutor,
     build_transform_annotated,
+    validate_batch,
 )
 
 # --- Domain -----------------------------------------------------------------
@@ -92,7 +93,7 @@ def render_teams_page() -> list[TeamDTO]:
         {'id': 2, 'owner': 20},
         {'id': 3, 'owner': 10},  # duplicate id → still just one DB call
     ]
-    return app.executor.render(TeamDTO, rows)
+    return validate_batch(TeamDTO, rows)
 ```
 
 A single page of N rows issues **one** `fetch_users(...)` call — regardless of N, and
@@ -100,22 +101,17 @@ regardless of how many duplicate ids the rows contain.
 
 ## Two-phase execution (under the hood)
 
-`app.executor.render(Model, rows)` does two things:
+`validate_batch(Model, rows)` does two things:
 
 ```
-Phase 1 — Plan    populate_context_with_batch(Model, rows)
-                  → walks rows, collects every unique id for every BatchArg field
-                    into {batch_key: set[ids]}
+Phase 1 — Plan    walks rows, collects every unique id for every BatchArg field
+                  into a {batch_key: set[ids]} validation context
 
 Phase 2 — Merge   Model.model_validate(row, context=ctx) for each row
                   → each @transformer runs with dependencies injected; the first
                     row's executor.fetch(...) issues one bulk call covering the
                     whole page, subsequent rows hit the entity-level cache
 ```
-
-You can run either phase manually if you need to — see
-`populate_context_with_batch`, `get_model_batches`, and `executor.fetch` /
-`executor.call`.
 
 ## Core concepts
 
@@ -209,7 +205,7 @@ assert call(owner_id=1, query_executor=fake) == User(id=1, name='…')
 
 Declaring a `BatchArg[T]` parameter on a transformer opts into bulk fetching. The
 parameter carries the full set of ids for this field on the current page, collected
-by Phase 1 of `executor.render(...)`:
+by Phase 1 of `validate_batch(...)`:
 
 ```python
 @app.transformer
@@ -298,11 +294,13 @@ from collections.abc import Iterator
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
+from pydantic import BaseModel
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from fastbff import (
-    FastBFF, BatchArg, Query, QueryExecutor, build_transform_annotated,
+  FastBFF, BatchArg, Query, QueryExecutor,
+  build_transform_annotated, validate_batch,
 )
 
 # --- SQLAlchemy wiring -----------------------------------------------------
@@ -310,9 +308,11 @@ from fastbff import (
 engine = create_engine('postgresql+psycopg://localhost/app')
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
+
 def get_db_session() -> Iterator[Session]:
-    with SessionLocal() as session:
-        yield session
+  with SessionLocal() as session:
+    yield session
+
 
 DBSession = Annotated[Session, Depends(get_db_session)]
 
@@ -321,36 +321,50 @@ DBSession = Annotated[Session, Depends(get_db_session)]
 app = FastBFF()
 fastapi_app = FastAPI()
 
+
 class FetchUsers(Query[dict[int, User]]):
-    ids: frozenset[int]
+  ids: frozenset[int]
+
 
 @app.queries
 def fetch_users(args: FetchUsers, session: DBSession) -> dict[int, User]:
-    stmt = select(UserRow).where(UserRow.id.in_(args.ids))
-    rows = session.execute(stmt).scalars().all()
-    return {row.id: User(id=row.id, name=row.name) for row in rows}
+  stmt = select(UserRow).where(UserRow.id.in_(args.ids))
+  rows = session.execute(stmt).scalars().all()
+  return {row.id: User(id=row.id, name=row.name) for row in rows}
+
 
 @app.transformer
 def transform_owner(
-    owner_id: int,
-    batch: BatchArg[int],
-    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+        owner_id: int,
+        batch: BatchArg[int],
+        query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
 ) -> User | None:
-    return query_executor.fetch(FetchUsers(ids=batch.ids)).get(owner_id)
+  return query_executor.fetch(FetchUsers(ids=batch.ids)).get(owner_id)
 
-OwnerTransformerAnnotated = build_transform_annotated(transform_owner)
+
+UserTransformerAnnotated = build_transform_annotated(transform_owner)
+
 
 class TeamDTO(BaseModel):
-    id: int
-    owner: OwnerTransformerAnnotated
+  id: int
+  owner: UserTransformerAnnotated
+
+
+class FetchTeams(Query[list[TeamDTO]]):
+  pass
+
+
+@app.queries
+def fetch_teams(args: FetchTeams, session: DBSession) -> list[TeamDTO]:
+  rows = list(session.execute(select(TeamRow)).mappings().all())
+  return validate_batch(TeamDTO, rows)
+
 
 @fastapi_app.get('/teams', response_model=list[TeamDTO])
 def list_teams(
-    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
-    session: DBSession,
+        query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
 ) -> list[TeamDTO]:
-    rows = session.execute(select(TeamRow)).mappings().all()
-    return query_executor.render(TeamDTO, rows)
+  return query_executor.fetch(FetchTeams())
 ```
 
 The `DBSession` alias is a plain FastAPI `Depends(...)` — fastbff's
@@ -387,7 +401,7 @@ All errors raised by the library subclass `FastBFFError`. Common ones:
   `build_transform_annotated` called on an unregistered function.
 - `QueryNotRegisteredError` — `fetch`/`call` against an unregistered handler.
 - `BatchContextMissingError` — transformer with `BatchArg` invoked without context
-  (forgot `populate_context_with_batch` or `executor.render`).
+  (row validated via plain `Model.model_validate` instead of `validate_batch`).
 - `DependencyResolutionError` — one or more `Depends(...)` parameters failed to resolve.
 - `DependencyOverrideError` — `DependenciesSetup.override(...)` targeted an
   unregistered interface.
@@ -404,13 +418,13 @@ uv sync                         # install project + dev deps into .venv
 uv run pytest                   # run the test suite
 uv run ruff check . --fix       # lint + autofix
 uv run ruff format .            # format
-uv run ty check src             # type check
+uv run ty check fastbff         # type check
 uv run pre-commit install       # install git hooks
 uv run pre-commit run --all-files
 ```
 
 Tests are colocated with the modules they exercise, using the `_test.py` suffix
-(e.g. `src/fastbff/query_executor/query_executor_test.py`). The cross-cutting
+(e.g. `fastbff/query_executor/query_executor_test.py`). The cross-cutting
 three-phase integration test lives at `integration_test.py` in the project root.
 
 ## License

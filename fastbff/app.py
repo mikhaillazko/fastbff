@@ -22,7 +22,7 @@ class FastBFF:
 
     Wires the four moving parts (DI container, queries registry, transformer
     registry, executor) so that user code only has to register handlers and
-    call :meth:`render`::
+    call :func:`validate_batch`::
 
         app = FastBFF()
 
@@ -35,7 +35,7 @@ class FastBFF:
         # ...or stage in a router and merge later:
         app.include_router(router)
 
-        results = app.executor.render(TeamDTO, rows)
+        results = validate_batch(TeamDTO, rows)
 
     All four collaborators are exposed as properties (``injector``,
     ``queries``, ``transformer``, ``executor``) so advanced callers can wire

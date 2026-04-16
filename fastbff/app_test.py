@@ -13,6 +13,7 @@ from fastbff import Query
 from fastbff import QueryExecutor
 from fastbff import QueryRouter
 from fastbff import build_transform_annotated
+from fastbff import validate_batch
 from fastbff.exceptions import QueryRegistrationError
 
 
@@ -58,7 +59,7 @@ def test_bff_app_renders_a_transformer_field() -> None:
 
     @app.injector.entrypoint
     def render_page() -> list[TeamDTO]:
-        return app.executor.render(TeamDTO, rows)
+        return validate_batch(TeamDTO, rows)
 
     results = render_page()
 
@@ -107,7 +108,7 @@ def test_include_router_merges_queries_and_transformers() -> None:
 
     @app.injector.entrypoint
     def render_page() -> list[TeamDTO]:
-        return app.executor.render(TeamDTO, [{'id': 1, 'owner': 10}, {'id': 2, 'owner': 20}])
+        return validate_batch(TeamDTO, [{'id': 1, 'owner': 10}, {'id': 2, 'owner': 20}])
 
     results = render_page()
 
@@ -186,7 +187,7 @@ def test_router_dependencies_resolve_through_app_after_include() -> None:
 
     @app.injector.entrypoint
     def render_one() -> NameDTO:
-        return app.executor.render(NameDTO, [{'greeting': 'world'}])[0]
+        return validate_batch(NameDTO, [{'greeting': 'world'}])[0]
 
     result = render_one()
     assert result.greeting == Greeting(message='stub hello world')
