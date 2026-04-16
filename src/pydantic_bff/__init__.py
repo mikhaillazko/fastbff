@@ -31,8 +31,6 @@ Dependency injection
 ~~~~~~~~~~~~~~~~~~~~
 - :class:`InjectorRegistry` — DI container (``inject``, ``entrypoint``, ``bind``).
 - :class:`TransformerRegistry` — ``@transformer`` decorator factory.
-- :func:`dependency` — class decorator that turns a class into an
-  ``Annotated[Class, Depends(Class)]`` alias.
 
 Test helpers
 ~~~~~~~~~~~~
@@ -54,7 +52,6 @@ from .exceptions import QueryRegistrationError
 from .exceptions import RegistrationError
 from .exceptions import TransformerRegistrationError
 from .injections.dependencies_setup import DependenciesSetup
-from .injections.dependency import dependency
 from .injections.dependency_provider import DependencyProvider
 from .injections.registry import InjectorRegistry
 from .injections.registry import get_injector_registry
@@ -95,7 +92,6 @@ __all__ = [
     'TransformerFieldInfo',
     'TransformerRegistry',
     'build_transform_annotated',
-    'dependency',
     'get_injector_registry',
     'get_transformer_registry',
     # Test helpers

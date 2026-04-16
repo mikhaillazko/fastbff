@@ -42,9 +42,9 @@ class InjectorRegistry:
         """Register *factory* as the provider for *target* within this injector.
 
         *target* may be a plain class, an ``Annotated[Class, Depends(...)]``
-        alias (the form produced by :func:`dependency`), or any other callable
-        used as a DI key. Using ``bind`` removes the need to manually unwrap
-        ``Class.__origin__`` for ``@dependency``-decorated services::
+        alias, or any other callable used as a DI key. ``bind`` unwraps
+        ``Annotated.__origin__`` for you so either form resolves to the same
+        override entry::
 
             injector.bind(QueryExecutor, lambda: shared_executor)
         """

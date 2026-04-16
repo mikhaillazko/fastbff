@@ -1,8 +1,10 @@
 """Tests for :class:`FastBFF` and :class:`QueryRouter` — local registration + include_router merge."""
 
 from dataclasses import dataclass
+from typing import Annotated
 
 import pytest
+from fastapi import Depends
 from pydantic import BaseModel
 
 from pydantic_bff import BatchArg
@@ -37,7 +39,7 @@ def test_bff_app_renders_a_transformer_field() -> None:
     def transform_owner(
         owner_id: int,
         batch: BatchArg[int],
-        query_executor: QueryExecutor,
+        query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
     ) -> User | None:
         users = query_executor.fetch(FetchUsers(ids=batch.ids))
         return users.get(owner_id)
@@ -86,7 +88,7 @@ def test_include_router_merges_queries_and_transformers() -> None:
     def transform_owner(
         owner_id: int,
         batch: BatchArg[int],
-        query_executor: QueryExecutor,
+        query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
     ) -> User | None:
         users = query_executor.fetch(FetchUsers(ids=batch.ids))
         return users.get(owner_id)
@@ -150,13 +152,11 @@ def test_include_router_raises_on_duplicate_function() -> None:
 
 def test_router_dependencies_resolve_through_app_after_include() -> None:
     """A router-registered transformer should pick up the app's bind() overrides."""
-    from pydantic_bff import dependency
 
     @dataclass(frozen=True)
     class Greeting:
         message: str
 
-    @dependency
     class Greeter:
         def hello(self, name: str) -> Greeting:
             return Greeting(message=f'plain hello {name}')
@@ -168,7 +168,10 @@ def test_router_dependencies_resolve_through_app_after_include() -> None:
     router = QueryRouter()
 
     @router.transformer
-    def transform_name(name: str, greeter: Greeter) -> Greeting:
+    def transform_name(
+        name: str,
+        greeter: Annotated[Greeter, Depends(Greeter)],
+    ) -> Greeting:
         return greeter.hello(name)
 
     GreetingTransformerAnnotated = build_transform_annotated(transform_name)

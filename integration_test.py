@@ -1,7 +1,9 @@
 """End-to-end Plan → Fetch → Merge flow with the simplified one-call API."""
 
 from dataclasses import dataclass
+from typing import Annotated
 
+from fastapi import Depends
 from pydantic import BaseModel
 
 from pydantic_bff import BatchArg
@@ -38,7 +40,11 @@ def test_render_issues_one_bulk_call_per_page() -> None:
         return {i: User(id=i, name=f'u{i}') for i in args.ids}
 
     @transformer(prefetch=FetchUsers)
-    def transform_owner(owner_id: int, batch: BatchArg[int], query_executor: QueryExecutor) -> User | None:
+    def transform_owner(
+        owner_id: int,
+        batch: BatchArg[int],
+        query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+    ) -> User | None:
         users = query_executor.fetch(FetchUsers(ids=batch.ids))
         return users.get(owner_id)
 
@@ -86,7 +92,11 @@ def test_render_with_function_signature_query() -> None:
         return {i: User(id=i, name=f'u{i}') for i in ids}
 
     @transformer(prefetch=fetch_users)
-    def transform_owner(owner_id: int, batch: BatchArg[int], query_executor: QueryExecutor) -> User | None:
+    def transform_owner(
+        owner_id: int,
+        batch: BatchArg[int],
+        query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+    ) -> User | None:
         users = query_executor.call(fetch_users, ids=batch.ids)
         return users.get(owner_id)
 

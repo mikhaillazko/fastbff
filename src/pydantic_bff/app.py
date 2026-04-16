@@ -67,9 +67,9 @@ class FastBFF:
     def executor(self) -> QueryExecutor:
         """The app's process-wide :class:`QueryExecutor`.
 
-        For request-scoped use under FastAPI, prefer FastAPI's own resolution of
-        :class:`QueryExecutor` (which is :func:`@dependency`-decorated) so each
-        HTTP request gets a fresh instance with a fresh cache.
+        For request-scoped use under FastAPI, annotate handler parameters as
+        ``Annotated[QueryExecutor, Depends(QueryExecutor)]`` so each HTTP
+        request gets a fresh instance with a fresh cache.
         """
         return self._executor
 

@@ -33,7 +33,9 @@ Runtime deps: `pydantic>=2`, `fastapi>=0.100`. Python 3.12+ (uses PEP 695 generi
 
 ```python
 from dataclasses import dataclass
+from typing import Annotated
 
+from fastapi import Depends
 from pydantic import BaseModel
 
 from pydantic_bff import (
@@ -70,7 +72,7 @@ def fetch_users(args: FetchUsers) -> dict[int, User]:
 def transform_owner(
     owner_id: int,
     batch: BatchArg[int],
-    query_executor: QueryExecutor,
+    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
 ) -> User | None:
     users = query_executor.fetch(FetchUsers(ids=batch.ids))
     return users.get(owner_id)
@@ -174,7 +176,10 @@ registers it and returns the function unchanged — directly callable in tests. 
 
 ```python
 @app.transformer
-def transform_owner(owner_id: int, query_executor: QueryExecutor) -> User | None:
+def transform_owner(
+    owner_id: int,
+    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+) -> User | None:
     ...
 
 OwnerTransformerAnnotated = build_transform_annotated(transform_owner)
@@ -212,7 +217,7 @@ with `prefetch=` so `executor.render(...)` knows which query to call:
 def transform_owner(
     owner_id: int,
     batch: BatchArg[int],            # all ids for this field on the current page
-    query_executor: QueryExecutor,
+    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
 ) -> User | None:
     users = query_executor.fetch(FetchUsers(ids=batch.ids))
     return users.get(owner_id)
@@ -251,8 +256,9 @@ def handler() -> ...:
     ...
 ```
 
-`app.bind(InterfaceOrAnnotatedAlias, factory)` registers a provider — no need to unwrap
-`__origin__` for `@dependency`-decorated services. Works equally well with test doubles:
+`app.bind(InterfaceOrAnnotatedAlias, factory)` registers a provider — both a bare
+class and its ``Annotated[Class, Depends(Class)]`` alias resolve to the same override
+entry, so pass whichever is convenient. Works equally well with test doubles:
 
 ```python
 app.bind(QueryExecutor, lambda: shared_executor)
@@ -275,7 +281,9 @@ def fetch_users(args: FetchUsers) -> dict[int, User]: ...
 
 @router.transformer(prefetch=FetchUsers)
 def transform_owner(
-    owner_id: int, batch: BatchArg[int], query_executor: QueryExecutor,
+    owner_id: int,
+    batch: BatchArg[int],
+    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
 ) -> User | None: ...
 
 # main.py
@@ -293,8 +301,9 @@ not at runtime.
 
 ### FastAPI integration
 
-`QueryExecutor` is request-scoped naturally because `@dependency`-decorated services
-participate in FastAPI's normal `Depends(...)` lifecycle. A complete route:
+`QueryExecutor` is request-scoped naturally: annotate handler parameters as
+`Annotated[QueryExecutor, Depends(QueryExecutor)]` and FastAPI's own `Depends(...)`
+pipeline will resolve a fresh instance per request. A complete route:
 
 ```python
 from collections.abc import Iterator
@@ -335,7 +344,9 @@ def fetch_users(args: FetchUsers, session: DBSession) -> dict[int, User]:
 
 @app.transformer(prefetch=FetchUsers)
 def transform_owner(
-    owner_id: int, batch: BatchArg[int], query_executor: QueryExecutor,
+    owner_id: int,
+    batch: BatchArg[int],
+    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
 ) -> User | None:
     return query_executor.fetch(FetchUsers(ids=batch.ids)).get(owner_id)
 
@@ -346,7 +357,10 @@ class TeamDTO(BaseModel):
     owner: OwnerTransformerAnnotated
 
 @fastapi_app.get('/teams', response_model=list[TeamDTO])
-def list_teams(query_executor: QueryExecutor, session: DBSession) -> list[TeamDTO]:
+def list_teams(
+    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+    session: DBSession,
+) -> list[TeamDTO]:
     rows = session.execute(select(TeamRow)).mappings().all()
     return query_executor.render(TeamDTO, rows)
 ```
@@ -357,14 +371,11 @@ injector, so FastAPI-style `Depends` parameters resolve at call time exactly
 as they would in a FastAPI route handler. The same `Session` instance is
 reused across every query/transformer in a single request.
 
-`QueryExecutor` is `@dependency`-decorated, so the exported symbol *is*
-`Annotated[QueryExecutor, Depends(QueryExecutor)]` — FastAPI walks the
-`Annotated` metadata and resolves it as a per-request dependency. No need for
-`= Depends()` defaults or extra wrapping at the call site.
-
-Each HTTP request gets a fresh `QueryExecutor` (per-request cache, per-request
-absence tracking). Override providers in tests via FastAPI's standard
-`fastapi_app.dependency_overrides`, or the injector's own `app.bind(...)`.
+Spell out the `Annotated[QueryExecutor, Depends(QueryExecutor)]` form at every use
+site — FastAPI walks the `Annotated` metadata and resolves a fresh
+`QueryExecutor` per request (per-request cache, per-request absence tracking).
+Override providers in tests via FastAPI's standard `fastapi_app.dependency_overrides`,
+or the injector's own `app.bind(...)`.
 
 ### Testing with `QueryExecutorMock`
 

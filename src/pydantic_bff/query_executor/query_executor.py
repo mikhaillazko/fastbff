@@ -7,14 +7,12 @@ from typing import Any
 from pydantic import BaseModel as PydanticBaseModel
 
 from pydantic_bff.exceptions import RegistrationError
-from pydantic_bff.injections.dependency import dependency
 
 from .query import Query
 from .query_cache import QueryCache
 from .registry import IQueriesRegistry
 
 
-@dependency
 class QueryExecutor:
     """Per-request executor.
 

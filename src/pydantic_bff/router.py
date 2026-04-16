@@ -23,8 +23,11 @@ class QueryRouter:
         def fetch_users(args: FetchUsers) -> dict[int, User]: ...
 
         @router.transformer(prefetch=FetchUsers)
-        def transform_owner(owner_id: int, batch: BatchArg[int],
-                            query_executor: QueryExecutor) -> User | None: ...
+        def transform_owner(
+            owner_id: int,
+            batch: BatchArg[int],
+            query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+        ) -> User | None: ...
 
         app = FastBFF()
         app.include_router(router)

@@ -24,7 +24,10 @@ class TransformerRegistry:
     field type::
 
         @transformer
-        def transform_owner(owner_id: int, query_executor: QueryExecutor) -> User: ...
+        def transform_owner(
+            owner_id: int,
+            query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+        ) -> User: ...
 
         OwnerTransformerAnnotated = build_transform_annotated(transform_owner)
 
