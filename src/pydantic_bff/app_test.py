@@ -35,7 +35,7 @@ def test_bff_app_renders_a_transformer_field() -> None:
         db_calls.append(args.ids)
         return {i: User(id=i, name=f'u{i}') for i in args.ids}
 
-    @app.transformer(prefetch=FetchUsers)
+    @app.transformer
     def transform_owner(
         owner_id: int,
         batch: BatchArg[int],
@@ -84,7 +84,7 @@ def test_include_router_merges_queries_and_transformers() -> None:
         db_calls.append(args.ids)
         return {i: User(id=i, name=f'u{i}') for i in args.ids}
 
-    @router.transformer(prefetch=FetchUsers)
+    @router.transformer
     def transform_owner(
         owner_id: int,
         batch: BatchArg[int],

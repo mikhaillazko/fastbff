@@ -38,27 +38,24 @@ class TransformerRegistry:
     def __init__(self, injector: IInjectorRegistry) -> None:
         self._injector = injector
 
-    def __call__(self, func: Callable | None = None, *, prefetch: type | None = None) -> Any:
-        """Register a transformer.
-
-        Two equivalent forms::
+    def __call__(self, func: Callable) -> Callable:
+        """Register *func* as a transformer::
 
             @transformer
-            def transform_owner(...): ...
+            def transform_owner(
+                owner_id: int,
+                batch: BatchArg[int],
+                query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+            ) -> User | None: ...
 
-            @transformer(prefetch=FetchUsers)
-            def transform_owner(..., batch: BatchArg[int], ...): ...
-
-        ``prefetch`` is a :class:`Query` subclass (or registered ``@queries``
-        function) to be invoked once per page with the collected batch ids.
-        Required only if you call ``executor.render(Model, rows)`` and want
-        Phase 2 to be automatic; omit it if you orchestrate prefetch yourself.
+        The transformer body is responsible for fetching its own data (e.g.
+        ``query_executor.fetch(FetchUsers(ids=batch.ids))``). The query
+        executor's cache dedups across rows, so one bulk call per page is
+        issued on the first row and subsequent rows hit the cache.
         """
-        if func is None:
-            return lambda f: self._register(f, prefetch=prefetch)
-        return self._register(func, prefetch=prefetch)
+        return self._register(func)
 
-    def _register[F: Callable](self, func: F, *, prefetch: type | None) -> F:
+    def _register[F: Callable](self, func: F) -> F:
         hints = get_type_hints(func)
         return_type = hints.get('return')
         if return_type is None:
@@ -70,7 +67,6 @@ class TransformerRegistry:
             original_func=func,
             wrapped_call=wrapped_call,
             return_type=return_type,
-            prefetch_query=prefetch,
         )
         setattr(func, _FIELD_INFO_ATTR, field_info)
         return func

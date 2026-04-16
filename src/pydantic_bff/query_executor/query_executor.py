@@ -6,8 +6,6 @@ from typing import Any
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from pydantic_bff.exceptions import RegistrationError
-
 from .query import Query
 from .query_cache import QueryCache
 from .registry import IQueriesRegistry
@@ -102,79 +100,16 @@ class QueryExecutor:
         model: type[M],
         rows: Sequence[Mapping[str, Any]],
     ) -> list[M]:
-        """One-call Plan → Fetch → Merge.
+        """One-call Plan → Merge.
 
-        Each ``@transformer(prefetch=...)`` field on *model* contributes one
-        bulk query per page. Models without prefetch wiring still work — Phase 2
-        is skipped for those batches and you must orchestrate the prefetch
-        yourself.
+        Walks *rows* to collect batch ids into a Pydantic validation context,
+        then validates each row with that context. Transformers that use
+        ``BatchArg`` receive the full page's id set and are expected to call
+        ``executor.fetch(...)`` themselves — the query cache makes that a
+        single bulk call per page (first row fetches, subsequent rows hit the
+        entity-level cache).
         """
-        # Phase 1 — Plan
-        from pydantic_bff.transformer.batcher import get_model_batches
         from pydantic_bff.transformer.batcher import populate_context_with_batch
 
         context = populate_context_with_batch(model, rows)
-        # Phase 2 — Fetch
-        for batch in get_model_batches(model):
-            prefetch = batch.prefetch_query
-            if prefetch is None:
-                continue
-            ids = frozenset(context.get(batch.key, ()))
-            self._run_prefetch(prefetch, ids)
-        # Phase 3 — Merge
         return [model.model_validate(row, context=context) for row in rows]
-
-    def _run_prefetch(self, prefetch: Any, ids: frozenset[Any]) -> None:
-        if isinstance(prefetch, type) and issubclass(prefetch, Query):
-            self.fetch(_instantiate_prefetch(prefetch, ids))
-            return
-        if callable(prefetch):
-            annotation = self._queries_registry.get_annotation_by_func(prefetch)
-            ids_field = annotation.ids_param_name
-            if ids_field is None:
-                raise RegistrationError(
-                    f'Cannot prefetch via {prefetch!r}: the registered handler has no Iterable parameter '
-                    'to bind batch ids to.',
-                )
-            self.call(prefetch, **{ids_field: ids})
-            return
-        raise RegistrationError(
-            f'prefetch={prefetch!r} must be a Query subclass or a registered @queries function.',
-        )
-
-
-def _instantiate_prefetch(query_cls: type, ids: frozenset[Any]) -> Query[Any]:
-    """Build a ``Query`` instance for prefetch given the collected batch ids.
-
-    The query class must declare exactly one ``Iterable``-typed field (the
-    standard ``ids: frozenset[T]`` pattern).
-    """
-    if not (isinstance(query_cls, type) and issubclass(query_cls, Query)):
-        raise RegistrationError(
-            f'prefetch={query_cls!r} is not a Query subclass; '
-            'pass a `Query[...]` subclass to `@transformer(prefetch=...)`.',
-        )
-    ids_field = _find_iterable_field(query_cls)
-    if ids_field is None:
-        raise RegistrationError(
-            f'Cannot prefetch {query_cls.__name__}: no Iterable field found to bind batch ids to. '
-            'Declare e.g. `ids: frozenset[int]` on the Query subclass.',
-        )
-    return query_cls(**{ids_field: ids})
-
-
-def _find_iterable_field(query_cls: type) -> str | None:
-    from typing import get_args
-    from typing import get_origin
-
-    for name, info in query_cls.model_fields.items():  # type: ignore[attr-defined]
-        annotation = info.annotation
-        origin = get_origin(annotation)
-        if origin is None:
-            continue
-        try:
-            if issubclass(origin, Iterable) and get_args(annotation):
-                return name
-        except TypeError:
-            continue
-    return None

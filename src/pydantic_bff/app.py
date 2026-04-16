@@ -29,7 +29,7 @@ class FastBFF:
         @app.queries
         def fetch_users(args: FetchUsers) -> dict[int, User]: ...
 
-        @app.transformer(prefetch=FetchUsers)
+        @app.transformer
         def transform_owner(...): ...
 
         # ...or stage in a router and merge later:

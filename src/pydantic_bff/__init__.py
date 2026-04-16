@@ -17,7 +17,6 @@ Composition
   for a ``@transformer``-registered function.
 - :class:`TransformerFieldInfo` — the metadata object placed inside
   ``Annotated[ReturnType, ...]`` (returned by ``build_transform_annotated``).
-- :func:`bff_model` — optional eager-introspection decorator for response models.
 - :func:`populate_context_with_batch` — Phase 1 helper (for manual orchestration).
 
 Queries
@@ -62,7 +61,6 @@ from .query_executor.registry import QueriesRegistry
 from .query_executor.registry import get_queries_registry
 from .router import QueryRouter
 from .transformer.batcher import populate_context_with_batch
-from .transformer.decorators import bff_model
 from .transformer.registry import TransformerRegistry
 from .transformer.registry import build_transform_annotated
 from .transformer.registry import get_transformer_registry
@@ -77,7 +75,6 @@ __all__ = [
     'QueryRouter',
     # Composition
     'BatchArg',
-    'bff_model',
     'populate_context_with_batch',
     # Queries
     'QueriesRegistry',

@@ -17,8 +17,8 @@ def introspect_model_transformers(cls: type[PydanticBaseModel]) -> None:
     """Scan *cls*'s annotations for transformer fields with a ``BatchArg`` and
     cache the batching metadata on ``cls.__batches__``.
 
-    Invoked once per model class, typically via the :func:`bff_model`
-    decorator. No-ops when the model has no batchable transformer fields.
+    Invoked lazily on first use (via :func:`get_model_batches`). No-ops when
+    the model has no batchable transformer fields.
     """
     batches = []
     annotations = get_annotations(cls)
@@ -30,7 +30,6 @@ def introspect_model_transformers(cls: type[PydanticBaseModel]) -> None:
                     field_name=field_name,
                     key=field_info.batch_key,
                     batch_fetch_type=field_info.batch_fetch_type,
-                    prefetch_query=field_info.prefetch_query,
                 ),
             )
 

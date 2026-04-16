@@ -24,7 +24,6 @@ class BatchInfo:
     field_name: str
     key: str
     batch_fetch_type: Any | None = field(default=None)
-    prefetch_query: type | None = field(default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,8 +69,7 @@ class TransformerFieldInfo:
       ``Annotated[ReturnType, ...]`` and Pydantic will run the wrapped
       transformer as a plain validator.
     * **Introspection metadata** — :func:`introspect_model_transformers` looks
-      for instances of this class to discover batch fields and their prefetch
-      queries.
+      for instances of this class to discover batch fields.
     """
 
     def __init__(
@@ -79,7 +77,6 @@ class TransformerFieldInfo:
         original_func: Callable,
         wrapped_call: Callable,
         return_type: type,
-        prefetch_query: type | None = None,
     ) -> None:
         batch_arg_name, batch_arg_cls = find_arg_info(original_func, BatchArg)
         self.batch_arg_name = batch_arg_name
@@ -88,7 +85,6 @@ class TransformerFieldInfo:
         self.original_func = original_func
         self.call = wrapped_call
         self.return_type = return_type
-        self.prefetch_query = prefetch_query
         self.batch_fetch_type: type | None = None
         if batch_arg_cls is not None:
             key_type = _get_batch_key_type(batch_arg_cls)

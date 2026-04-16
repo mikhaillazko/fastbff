@@ -157,18 +157,3 @@ def test_has_info_arg_detected(noop_injector) -> None:
     field_info = transformer_metadata(with_info)
     assert field_info is not None
     assert field_info.has_info_arg is True
-
-
-def test_prefetch_query_recorded_on_field_info(noop_injector) -> None:
-    transformer = TransformerRegistry(injector=noop_injector)
-
-    class FakeQuery:
-        pass
-
-    @transformer(prefetch=FakeQuery)
-    def transform_user(user_id: UserId, users_batch: BatchArg[UserId]) -> User:
-        return User(id=user_id, name='')
-
-    field_info = transformer_metadata(transform_user)
-    assert field_info is not None
-    assert field_info.prefetch_query is FakeQuery

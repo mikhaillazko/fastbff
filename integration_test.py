@@ -39,7 +39,7 @@ def test_render_issues_one_bulk_call_per_page() -> None:
         db_calls.append(args.ids)
         return {i: User(id=i, name=f'u{i}') for i in args.ids}
 
-    @transformer(prefetch=FetchUsers)
+    @transformer
     def transform_owner(
         owner_id: int,
         batch: BatchArg[int],
@@ -50,7 +50,7 @@ def test_render_issues_one_bulk_call_per_page() -> None:
 
     OwnerTransformerAnnotated = build_transform_annotated(transform_owner)
 
-    class TeamDTO(BaseModel):  # no @bff_model — auto-introspected
+    class TeamDTO(BaseModel):
         id: int
         owner: OwnerTransformerAnnotated
 
@@ -77,7 +77,7 @@ def test_render_issues_one_bulk_call_per_page() -> None:
 
 
 def test_render_with_function_signature_query() -> None:
-    """Same shape, but the prefetch handler is a plain function — no Query[T] subclass."""
+    """Same shape, but the bulk handler is a plain function — no Query[T] subclass."""
     injector = InjectorRegistry()
     queries = QueriesRegistry(injector=injector)  # type: ignore[arg-type]
     transformer = TransformerRegistry(injector=injector)  # type: ignore[arg-type]
@@ -91,7 +91,7 @@ def test_render_with_function_signature_query() -> None:
         db_calls.append(ids)
         return {i: User(id=i, name=f'u{i}') for i in ids}
 
-    @transformer(prefetch=fetch_users)
+    @transformer
     def transform_owner(
         owner_id: int,
         batch: BatchArg[int],

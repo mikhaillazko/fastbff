@@ -17,8 +17,8 @@ def populate_context_with_batch(
     """Phase 1 — scan *dict_objects* for every batchable field on *return_model*
     and return a Pydantic validation context populated with the collected IDs.
 
-    If *return_model* has not been introspected yet (no ``@bff_model`` and no
-    prior call), introspection runs lazily here, so models work out of the box.
+    If *return_model* has not been introspected yet, introspection runs lazily
+    here, so models work out of the box.
 
     Pass the result as ``context=...`` when calling ``Model.model_validate`` so
     that transformers using ``BatchArg`` can read the full ID set from the

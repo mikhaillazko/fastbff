@@ -68,7 +68,7 @@ def fetch_users(args: FetchUsers) -> dict[int, User]:
 
 # --- Transformer + Response model ------------------------------------------
 
-@app.transformer(prefetch=FetchUsers)
+@app.transformer
 def transform_owner(
     owner_id: int,
     batch: BatchArg[int],
@@ -98,25 +98,23 @@ def render_teams_page() -> list[TeamDTO]:
 A single page of N rows issues **one** `fetch_users(...)` call — regardless of N, and
 regardless of how many duplicate ids the rows contain.
 
-## Three-phase execution (under the hood)
+## Two-phase execution (under the hood)
 
-`app.executor.render(Model, rows)` does three things:
+`app.executor.render(Model, rows)` does two things:
 
 ```
 Phase 1 — Plan    populate_context_with_batch(Model, rows)
                   → walks rows, collects every unique id for every BatchArg field
                     into {batch_key: set[ids]}
 
-Phase 2 — Fetch   for each @transformer(prefetch=Q): executor.fetch(Q(ids=...))
-                  → one bulk @query call per batch, populating the QueryExecutor cache
-
-Phase 3 — Merge   Model.model_validate(row, context=ctx) for each row
-                  → each @transformer runs with dependencies injected; every
-                    fetch() inside a transformer is a guaranteed cache hit
+Phase 2 — Merge   Model.model_validate(row, context=ctx) for each row
+                  → each @transformer runs with dependencies injected; the first
+                    row's executor.fetch(...) issues one bulk call covering the
+                    whole page, subsequent rows hit the entity-level cache
 ```
 
-You can run any phase manually if you need to (e.g. mix in custom prefetch logic) —
-see `populate_context_with_batch`, `get_model_batches`, and `executor.fetch` /
+You can run either phase manually if you need to — see
+`populate_context_with_batch`, `get_model_batches`, and `executor.fetch` /
 `executor.call`.
 
 ## Core concepts
@@ -207,13 +205,14 @@ call = transformer_callable(transform_owner)
 assert call(owner_id=1, query_executor=fake) == User(id=1, name='…')
 ```
 
-### `BatchArg[T]` + `prefetch=`
+### `BatchArg[T]`
 
-Declaring a `BatchArg[T]` parameter on a transformer opts into bulk fetching. Pair it
-with `prefetch=` so `executor.render(...)` knows which query to call:
+Declaring a `BatchArg[T]` parameter on a transformer opts into bulk fetching. The
+parameter carries the full set of ids for this field on the current page, collected
+by Phase 1 of `executor.render(...)`:
 
 ```python
-@app.transformer(prefetch=FetchUsers)
+@app.transformer
 def transform_owner(
     owner_id: int,
     batch: BatchArg[int],            # all ids for this field on the current page
@@ -223,20 +222,9 @@ def transform_owner(
     return users.get(owner_id)
 ```
 
-If you orchestrate Phase 2 yourself, omit `prefetch=` — the framework will skip the
-prefetch step and you can call `executor.fetch(...)` manually before validation.
-
-### `bff_model` (optional)
-
-Pydantic models are auto-introspected on first `populate_context_with_batch` /
-`executor.render` call. The `@bff_model` decorator is optional — use it only when you
-want introspection paid at import time, or to make the intent visible:
-
-```python
-@bff_model
-class TeamDTO(BaseModel):
-    owner: OwnerTransformerAnnotated
-```
+The first row's `executor.fetch(FetchUsers(ids=batch.ids))` issues the bulk call;
+subsequent rows hit the query executor's entity-level cache. One DB call per page,
+regardless of row count.
 
 ### Dependency injection
 
@@ -279,7 +267,7 @@ router = QueryRouter()
 @router.queries
 def fetch_users(args: FetchUsers) -> dict[int, User]: ...
 
-@router.transformer(prefetch=FetchUsers)
+@router.transformer
 def transform_owner(
     owner_id: int,
     batch: BatchArg[int],
@@ -342,7 +330,7 @@ def fetch_users(args: FetchUsers, session: DBSession) -> dict[int, User]:
     rows = session.execute(stmt).scalars().all()
     return {row.id: User(id=row.id, name=row.name) for row in rows}
 
-@app.transformer(prefetch=FetchUsers)
+@app.transformer
 def transform_owner(
     owner_id: int,
     batch: BatchArg[int],

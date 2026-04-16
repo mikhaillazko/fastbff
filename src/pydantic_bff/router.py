@@ -22,7 +22,7 @@ class QueryRouter:
         @router.queries
         def fetch_users(args: FetchUsers) -> dict[int, User]: ...
 
-        @router.transformer(prefetch=FetchUsers)
+        @router.transformer
         def transform_owner(
             owner_id: int,
             batch: BatchArg[int],
