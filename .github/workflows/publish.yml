@@ -1,59 +1,31 @@
-name: Publish to PyPI
+name: Publish
 
 on:
-  push:
-    tags:
-      - 'v*'
   release:
-    types: [published]
+    types:
+      - created
+
+permissions: {}
 
 jobs:
-  build:
-    name: Build distribution
+  publish:
     runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Build sdist and wheel
-        run: uv build
-
-      - name: Upload distribution artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-  publish-pypi:
-    name: Publish to PyPI
-    needs: build
-    runs-on: ubuntu-latest
-
-    # Use PyPI trusted publishing — no long-lived token required.
-    # Configure the publisher on PyPI:
-    #   https://pypi.org/manage/project/pydantic-bff/settings/publishing/
-    #   owner: mikhaillazko, repo: pydantic-bff, workflow: publish.yml, environment: pypi
-    environment:
-      name: pypi
-      url: https://pypi.org/p/pydantic-bff
-
     permissions:
-      id-token: write  # required for trusted publishing via OIDC
-
+      id-token: write
+      contents: read
     steps:
-      - name: Download distribution artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version-file: ".python-version"
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.11.4"
+      - name: Build distribution
+        run: uv build
+      - name: Publish
+        run: uv publish
