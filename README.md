@@ -18,7 +18,7 @@ monolithic systems.
   ID sets are merged into one fetch with only the missing ids).
 - **Dependency injection** — built on FastAPI's `Depends`; the same `QueryExecutor` /
   repository / session is shared across every transformer in a request scope.
-- **Routers** — register handlers locally on a `QueryRouter` and merge them into a `BFF`
+- **Routers** — register handlers locally on a `QueryRouter` and merge them into a `FastBFF`
   app with `app.include_router(router)`, mirroring FastAPI's `APIRouter`.
 
 ## Install
@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 
 from pydantic_bff import (
-    BFF,
+    FastBFF,
     BatchArg,
     Query,
     QueryExecutor,
@@ -53,7 +53,7 @@ class User:
 
 # --- App --------------------------------------------------------------------
 
-app = BFF()
+app = FastBFF()
 
 # --- Bulk query -------------------------------------------------------------
 
@@ -262,10 +262,10 @@ app.bind(SomeService, lambda: FakeService())
 ### `QueryRouter` + `app.include_router`
 
 For multi-module apps, register handlers locally on a `QueryRouter` and attach the
-whole bundle to a `BFF` app at composition time — exactly like FastAPI's `APIRouter`:
+whole bundle to a `FastBFF` app at composition time — exactly like FastAPI's `APIRouter`:
 
 ```python
-from pydantic_bff import BFF, QueryRouter
+from pydantic_bff import FastBFF, QueryRouter
 
 # users/handlers.py
 router = QueryRouter()
@@ -279,7 +279,7 @@ def transform_owner(
 ) -> User | None: ...
 
 # main.py
-app = BFF()
+app = FastBFF()
 app.include_router(router)
 ```
 
@@ -297,21 +297,41 @@ not at runtime.
 participate in FastAPI's normal `Depends(...)` lifecycle. A complete route:
 
 ```python
-from fastapi import FastAPI
+from collections.abc import Iterator
+from typing import Annotated
+
+from fastapi import Depends, FastAPI
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from pydantic_bff import (
-    BFF, BatchArg, Query, QueryExecutor, build_transform_annotated,
+    FastBFF, BatchArg, Query, QueryExecutor, build_transform_annotated,
 )
 
-app = BFF()
+# --- SQLAlchemy wiring -----------------------------------------------------
+
+engine = create_engine('postgresql+psycopg://localhost/app')
+SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+def get_db_session() -> Iterator[Session]:
+    with SessionLocal() as session:
+        yield session
+
+DBSession = Annotated[Session, Depends(get_db_session)]
+
+# --- App + route -----------------------------------------------------------
+
+app = FastBFF()
 fastapi_app = FastAPI()
 
 class FetchUsers(Query[dict[int, User]]):
     ids: frozenset[int]
 
 @app.queries
-def fetch_users(args: FetchUsers) -> dict[int, User]:
-    return user_repo.bulk_get(args.ids)
+def fetch_users(args: FetchUsers, session: DBSession) -> dict[int, User]:
+    stmt = select(UserRow).where(UserRow.id.in_(args.ids))
+    rows = session.execute(stmt).scalars().all()
+    return {row.id: User(id=row.id, name=row.name) for row in rows}
 
 @app.transformer(prefetch=FetchUsers)
 def transform_owner(
@@ -326,10 +346,16 @@ class TeamDTO(BaseModel):
     owner: OwnerTransformerAnnotated
 
 @fastapi_app.get('/teams', response_model=list[TeamDTO])
-def list_teams(query_executor: QueryExecutor) -> list[TeamDTO]:
-    rows = team_repo.all_rows()
+def list_teams(query_executor: QueryExecutor, session: DBSession) -> list[TeamDTO]:
+    rows = session.execute(select(TeamRow)).mappings().all()
     return query_executor.render(TeamDTO, rows)
 ```
+
+The `DBSession` alias is a plain FastAPI `Depends(...)` — pydantic-bff's
+`@app.queries` and `@app.transformer` decorators wrap your callable with the
+injector, so FastAPI-style `Depends` parameters resolve at call time exactly
+as they would in a FastAPI route handler. The same `Session` instance is
+reused across every query/transformer in a single request.
 
 `QueryExecutor` is `@dependency`-decorated, so the exported symbol *is*
 `Annotated[QueryExecutor, Depends(QueryExecutor)]` — FastAPI walks the

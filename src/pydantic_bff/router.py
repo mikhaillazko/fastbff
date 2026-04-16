@@ -1,8 +1,8 @@
-"""Local registries for staged registration prior to attaching to a :class:`BFF` app.
+"""Local registries for staged registration prior to attaching to a :class:`FastBFF` app.
 
 Mirrors FastAPI's :class:`fastapi.APIRouter` ergonomics: register your
 ``@router.queries`` and ``@router.transformer`` decorators against a router,
-then attach the whole bundle to an app via :meth:`BFF.include_router`.
+then attach the whole bundle to an app via :meth:`FastBFF.include_router`.
 """
 
 from .injections.registry import InjectorRegistry
@@ -14,8 +14,8 @@ class QueryRouter:
     """A bundle of query and transformer registrations not yet attached to an app.
 
     Use ``@router.queries`` and ``@router.transformer`` exactly like the
-    decorators on a :class:`BFF` app. Pass the router to
-    :meth:`BFF.include_router` to merge its registrations into the app::
+    decorators on a :class:`FastBFF` app. Pass the router to
+    :meth:`FastBFF.include_router` to merge its registrations into the app::
 
         router = QueryRouter()
 
@@ -26,7 +26,7 @@ class QueryRouter:
         def transform_owner(owner_id: int, batch: BatchArg[int],
                             query_executor: QueryExecutor) -> User | None: ...
 
-        app = BFF()
+        app = FastBFF()
         app.include_router(router)
 
     Registrations capture the router's own :class:`InjectorRegistry`. When the

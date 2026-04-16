@@ -1,12 +1,12 @@
-"""Tests for :class:`BFF` and :class:`QueryRouter` — local registration + include_router merge."""
+"""Tests for :class:`FastBFF` and :class:`QueryRouter` — local registration + include_router merge."""
 
 from dataclasses import dataclass
 
 import pytest
 from pydantic import BaseModel
 
-from pydantic_bff import BFF
 from pydantic_bff import BatchArg
+from pydantic_bff import FastBFF
 from pydantic_bff import Query
 from pydantic_bff import QueryExecutor
 from pydantic_bff import QueryRouter
@@ -21,7 +21,7 @@ class User:
 
 
 def test_bff_app_renders_a_transformer_field() -> None:
-    app = BFF()
+    app = FastBFF()
 
     db_calls: list[frozenset[int]] = []
 
@@ -100,7 +100,7 @@ def test_include_router_merges_queries_and_transformers() -> None:
         id: int
         owner: OwnerTransformerAnnotated
 
-    app = BFF()
+    app = FastBFF()
     app.include_router(router)
 
     @app.injector.entrypoint
@@ -125,7 +125,7 @@ def test_include_router_raises_on_duplicate_query_type() -> None:
     def fetch_users(args: FetchUsers) -> dict[int, User]:
         return {}
 
-    app = BFF()
+    app = FastBFF()
 
     @app.queries
     def fetch_users_again(args: FetchUsers) -> dict[int, User]:
@@ -137,7 +137,7 @@ def test_include_router_raises_on_duplicate_query_type() -> None:
 
 def test_include_router_raises_on_duplicate_function() -> None:
     router = QueryRouter()
-    app = BFF()
+    app = FastBFF()
 
     def fetch_users(ids: frozenset[int]) -> dict[int, User]:
         return {}
@@ -177,7 +177,7 @@ def test_router_dependencies_resolve_through_app_after_include() -> None:
         model_config = {'arbitrary_types_allowed': True}
         greeting: GreetingTransformerAnnotated
 
-    app = BFF()
+    app = FastBFF()
     app.bind(Greeter, lambda: StubGreeter())
     app.include_router(router)
 

@@ -1,4 +1,4 @@
-"""Top-level :class:`BFF` app — wires the queries registry, transformer registry,
+"""Top-level :class:`FastBFF` app — wires the queries registry, transformer registry,
 DI container, and a per-process :class:`QueryExecutor` together.
 
 Mirrors FastAPI's ``app = FastAPI(); app.include_router(router)`` ergonomics so
@@ -17,14 +17,14 @@ from .router import QueryRouter
 from .transformer.registry import TransformerRegistry
 
 
-class BFF:
+class FastBFF:
     """Composition root for a pydantic-bff application.
 
     Wires the four moving parts (DI container, queries registry, transformer
     registry, executor) so that user code only has to register handlers and
     call :meth:`render`::
 
-        app = BFF()
+        app = FastBFF()
 
         @app.queries
         def fetch_users(args: FetchUsers) -> dict[int, User]: ...
@@ -97,14 +97,14 @@ class BFF:
             if query_type in self._queries._query_annotations:
                 raise QueryRegistrationError(
                     f'Duplicate @queries registration for query type {query_type.__name__!r} '
-                    f'when including router into BFF app.',
+                    f'when including router into FastBFF app.',
                 )
             self._queries._query_annotations[query_type] = annotation
         for func, annotation in router._queries._func_annotations.items():
             if func in self._queries._func_annotations:
                 raise QueryRegistrationError(
                     f'Duplicate @queries registration for function {func.__name__!r} '
-                    f'when including router into BFF app.',
+                    f'when including router into FastBFF app.',
                 )
             self._queries._func_annotations[func] = annotation
 

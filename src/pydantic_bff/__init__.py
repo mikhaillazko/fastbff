@@ -5,10 +5,10 @@ Public surface
 
 App / Router
 ~~~~~~~~~~~~
-- :class:`BFF` — composition root: bundles the queries registry, transformer
+- :class:`FastBFF` — composition root: bundles the queries registry, transformer
   registry, DI container, and a :class:`QueryExecutor`.
 - :class:`QueryRouter` — local registration scope, attached via
-  :meth:`BFF.include_router`.
+  :meth:`FastBFF.include_router`.
 
 Composition
 ~~~~~~~~~~~
@@ -44,7 +44,7 @@ Exceptions
 - :class:`PydanticBFFError` and its subclasses — see :mod:`pydantic_bff.exceptions`.
 """
 
-from .app import BFF
+from .app import FastBFF
 from .exceptions import BatchContextMissingError
 from .exceptions import DependencyOverrideError
 from .exceptions import DependencyResolutionError
@@ -76,7 +76,7 @@ from .transformer.types import TransformerFieldInfo
 
 __all__ = [
     # App / Router
-    'BFF',
+    'FastBFF',
     'QueryRouter',
     # Composition
     'BatchArg',
