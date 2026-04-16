@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mikhaillazko/pydantic-bff"
-Issues = "https://github.com/mikhaillazko/pydantic-bff/issues"
+Homepage = "https://github.com/mikhaillazko/fastbff"
+Issues = "https://github.com/mikhaillazko/fastbff/issues"
 
 [build-system]
 requires = ["hatchling"]
