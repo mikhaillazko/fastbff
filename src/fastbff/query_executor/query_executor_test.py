@@ -3,8 +3,8 @@
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
-from pydantic_bff.query_executor.query import Query
-from pydantic_bff.query_executor.query_executor import QueryExecutor
+from fastbff.query_executor.query import Query
+from fastbff.query_executor.query_executor import QueryExecutor
 
 # ---------------------------------------------------------------------------
 # Shared return types

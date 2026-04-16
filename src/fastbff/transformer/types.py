@@ -11,9 +11,9 @@ from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 from pydantic_core.core_schema import ValidationInfo
 
-from pydantic_bff.exceptions import BatchContextMissingError
-from pydantic_bff.injections.dependant import cached_signature
-from pydantic_bff.injections.reflection import find_arg_info
+from fastbff.exceptions import BatchContextMissingError
+from fastbff.injections.dependant import cached_signature
+from fastbff.injections.reflection import find_arg_info
 
 _BATCHES_ATTR = '__batches__'
 _FIELD_INFO_ATTR = '_transformer_field_info'

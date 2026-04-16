@@ -3,8 +3,8 @@
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
-from pydantic_bff.query_executor.mock import QueryExecutorMock
-from pydantic_bff.query_executor.query import Query
+from fastbff.query_executor.mock import QueryExecutorMock
+from fastbff.query_executor.query import Query
 
 
 @dataclass(frozen=True)

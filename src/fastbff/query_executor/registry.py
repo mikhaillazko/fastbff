@@ -4,9 +4,9 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from pydantic_bff.exceptions import QueryNotRegisteredError
-from pydantic_bff.exceptions import QueryRegistrationError
-from pydantic_bff.injections.registry import IInjectorRegistry
+from fastbff.exceptions import QueryNotRegisteredError
+from fastbff.exceptions import QueryRegistrationError
+from fastbff.injections.registry import IInjectorRegistry
 
 from .query_annotation import QueryAnnotation
 from .query_annotation import extract_query_return_type

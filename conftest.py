@@ -2,8 +2,8 @@ from collections.abc import Callable
 
 import pytest
 
-from pydantic_bff.query_executor.query_executor import QueryExecutor
-from pydantic_bff.query_executor.registry import QueriesRegistry
+from fastbff.query_executor.query_executor import QueryExecutor
+from fastbff.query_executor.registry import QueriesRegistry
 
 
 class NoopInjector:

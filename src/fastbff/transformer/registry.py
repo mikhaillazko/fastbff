@@ -6,8 +6,8 @@ from typing import get_args
 from typing import get_origin
 from typing import get_type_hints
 
-from pydantic_bff.exceptions import TransformerRegistrationError
-from pydantic_bff.injections.registry import IInjectorRegistry
+from fastbff.exceptions import TransformerRegistrationError
+from fastbff.injections.registry import IInjectorRegistry
 
 from .types import _FIELD_INFO_ATTR
 from .types import TransformerFieldInfo

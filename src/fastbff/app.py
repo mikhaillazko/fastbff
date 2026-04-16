@@ -18,7 +18,7 @@ from .transformer.registry import TransformerRegistry
 
 
 class FastBFF:
-    """Composition root for a pydantic-bff application.
+    """Composition root for a fastbff application.
 
     Wires the four moving parts (DI container, queries registry, transformer
     registry, executor) so that user code only has to register handlers and

@@ -1,4 +1,4 @@
-# pydantic-bff
+# fastbff
 
 Simple back-end for front-end using Pydantic. Declarative data composition with typed
 transformers, dependency injection, and automatic N+1 avoidance. Suitable for modular
@@ -24,7 +24,7 @@ monolithic systems.
 ## Install
 
 ```bash
-pip install pydantic-bff
+pip install fastbff
 ```
 
 Runtime deps: `pydantic>=2`, `fastapi>=0.100`. Python 3.12+ (uses PEP 695 generics).
@@ -38,7 +38,7 @@ from typing import Annotated
 from fastapi import Depends
 from pydantic import BaseModel
 
-from pydantic_bff import (
+from fastbff import (
     FastBFF,
     BatchArg,
     Query,
@@ -199,7 +199,7 @@ For unit testing, recover the DI-wrapped underlying callable with
 `transformer_callable`:
 
 ```python
-from pydantic_bff import transformer_callable
+from fastbff import transformer_callable
 
 call = transformer_callable(transform_owner)
 assert call(owner_id=1, query_executor=fake) == User(id=1, name='…')
@@ -259,7 +259,7 @@ For multi-module apps, register handlers locally on a `QueryRouter` and attach t
 whole bundle to a `FastBFF` app at composition time — exactly like FastAPI's `APIRouter`:
 
 ```python
-from pydantic_bff import FastBFF, QueryRouter
+from fastbff import FastBFF, QueryRouter
 
 # users/handlers.py
 router = QueryRouter()
@@ -301,7 +301,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from pydantic_bff import (
+from fastbff import (
     FastBFF, BatchArg, Query, QueryExecutor, build_transform_annotated,
 )
 
@@ -353,7 +353,7 @@ def list_teams(
     return query_executor.render(TeamDTO, rows)
 ```
 
-The `DBSession` alias is a plain FastAPI `Depends(...)` — pydantic-bff's
+The `DBSession` alias is a plain FastAPI `Depends(...)` — fastbff's
 `@app.queries` and `@app.transformer` decorators wrap your callable with the
 injector, so FastAPI-style `Depends` parameters resolve at call time exactly
 as they would in a FastAPI route handler. The same `Session` instance is
@@ -368,7 +368,7 @@ or the injector's own `app.bind(...)`.
 ### Testing with `QueryExecutorMock`
 
 ```python
-from pydantic_bff import QueryExecutorMock
+from fastbff import QueryExecutorMock
 
 mock = QueryExecutorMock(queries_registry=app.queries)
 mock.stub_query(FetchUsers, {10: User(id=10, name='u10')})
@@ -379,7 +379,7 @@ mock.reset_mock()  # clear stubs; subsequent fetch() calls hit real @queries han
 
 ## Errors
 
-All errors raised by the library subclass `PydanticBFFError`. Common ones:
+All errors raised by the library subclass `FastBFFError`. Common ones:
 
 - `QueryRegistrationError` — bad `@queries` declaration (missing return type, mismatch),
   or duplicate registration when including a router.
@@ -410,7 +410,7 @@ uv run pre-commit run --all-files
 ```
 
 Tests are colocated with the modules they exercise, using the `_test.py` suffix
-(e.g. `src/pydantic_bff/query_executor/query_executor_test.py`). The cross-cutting
+(e.g. `src/fastbff/query_executor/query_executor_test.py`). The cross-cutting
 three-phase integration test lives at `integration_test.py` in the project root.
 
 ## License

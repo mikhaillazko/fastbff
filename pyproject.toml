@@ -1,5 +1,5 @@
 [project]
-name = "pydantic-bff"
+name = "fastbff"
 version = "0.1.0"
 description = "Simple back-end for front-end using Pydantic. Declarative data composition with typed transformers, dependency injection, and automatic N+1 avoidance."
 readme = "README.md"
@@ -43,7 +43,7 @@ dev = [
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "src/pydantic_bff",
+    "src/fastbff",
     "README.md",
     "LICENSE",
 ]
@@ -52,13 +52,13 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pydantic_bff"]
+packages = ["src/fastbff"]
 exclude = [
     "**/*_test.py",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["src/pydantic_bff", "."]
+testpaths = ["src/fastbff", "."]
 python_files = ["*_test.py"]
 
 [tool.ruff]
@@ -79,7 +79,7 @@ force-single-line = true
 quote-style = "single"
 
 [tool.ty.src]
-include = ["src/pydantic_bff"]
+include = ["src/fastbff"]
 exclude = ["**/*_test.py"]
 
 [tool.ty.rules]

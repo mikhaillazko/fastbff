@@ -7,13 +7,13 @@ import pytest
 from fastapi import Depends
 from pydantic import BaseModel
 
-from pydantic_bff import BatchArg
-from pydantic_bff import FastBFF
-from pydantic_bff import Query
-from pydantic_bff import QueryExecutor
-from pydantic_bff import QueryRouter
-from pydantic_bff import build_transform_annotated
-from pydantic_bff.exceptions import QueryRegistrationError
+from fastbff import BatchArg
+from fastbff import FastBFF
+from fastbff import Query
+from fastbff import QueryExecutor
+from fastbff import QueryRouter
+from fastbff import build_transform_annotated
+from fastbff.exceptions import QueryRegistrationError
 
 
 @dataclass(frozen=True)

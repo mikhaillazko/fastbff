@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from pydantic_bff.exceptions import QueryRegistrationError
-from pydantic_bff.query_executor.query import Query
+from fastbff.exceptions import QueryRegistrationError
+from fastbff.query_executor.query import Query
 
 
 @dataclass(frozen=True)

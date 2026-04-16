@@ -8,7 +8,7 @@ from typing import get_origin
 
 from fastapi import Depends
 
-from pydantic_bff.exceptions import DependencyResolutionError
+from fastbff.exceptions import DependencyResolutionError
 
 from . import resolver
 from .dependant import Dependant

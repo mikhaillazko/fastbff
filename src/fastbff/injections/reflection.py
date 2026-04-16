@@ -7,7 +7,7 @@ from typing import get_origin
 
 from fastapi.params import Depends as FastDepends
 
-from pydantic_bff.injections.dependant import cached_signature
+from fastbff.injections.dependant import cached_signature
 
 
 def find_arg_info(func: Callable, target_type: type) -> tuple[str | None, type | None]:

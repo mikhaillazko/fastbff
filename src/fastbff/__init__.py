@@ -1,4 +1,4 @@
-"""pydantic-bff — declarative back-end-for-front-end on top of Pydantic + FastAPI.
+"""fastbff — declarative back-end-for-front-end on top of Pydantic + FastAPI.
 
 Public surface
 --------------
@@ -38,14 +38,14 @@ Test helpers
 
 Exceptions
 ~~~~~~~~~~
-- :class:`PydanticBFFError` and its subclasses — see :mod:`pydantic_bff.exceptions`.
+- :class:`FastBFFError` and its subclasses — see :mod:`fastbff.exceptions`.
 """
 
 from .app import FastBFF
 from .exceptions import BatchContextMissingError
 from .exceptions import DependencyOverrideError
 from .exceptions import DependencyResolutionError
-from .exceptions import PydanticBFFError
+from .exceptions import FastBFFError
 from .exceptions import QueryNotRegisteredError
 from .exceptions import QueryRegistrationError
 from .exceptions import RegistrationError
@@ -98,7 +98,7 @@ __all__ = [
     'BatchContextMissingError',
     'DependencyOverrideError',
     'DependencyResolutionError',
-    'PydanticBFFError',
+    'FastBFFError',
     'QueryNotRegisteredError',
     'QueryRegistrationError',
     'RegistrationError',

@@ -8,13 +8,13 @@ from typing import get_origin
 import pytest
 from pydantic_core.core_schema import ValidationInfo
 
-from pydantic_bff.exceptions import TransformerRegistrationError
-from pydantic_bff.transformer.registry import TransformerRegistry
-from pydantic_bff.transformer.registry import build_transform_annotated
-from pydantic_bff.transformer.registry import transformer_callable
-from pydantic_bff.transformer.registry import transformer_metadata
-from pydantic_bff.transformer.types import BatchArg
-from pydantic_bff.transformer.types import TransformerFieldInfo
+from fastbff.exceptions import TransformerRegistrationError
+from fastbff.transformer.registry import TransformerRegistry
+from fastbff.transformer.registry import build_transform_annotated
+from fastbff.transformer.registry import transformer_callable
+from fastbff.transformer.registry import transformer_metadata
+from fastbff.transformer.types import BatchArg
+from fastbff.transformer.types import TransformerFieldInfo
 
 
 @dataclass(frozen=True)

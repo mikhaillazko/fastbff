@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
-from pydantic_bff.exceptions import DependencyOverrideError
+from fastbff.exceptions import DependencyOverrideError
 
 
 @dataclass

@@ -109,7 +109,7 @@ class QueryExecutor:
         single bulk call per page (first row fetches, subsequent rows hit the
         entity-level cache).
         """
-        from pydantic_bff.transformer.batcher import populate_context_with_batch
+        from fastbff.transformer.batcher import populate_context_with_batch
 
         context = populate_context_with_batch(model, rows)
         return [model.model_validate(row, context=context) for row in rows]

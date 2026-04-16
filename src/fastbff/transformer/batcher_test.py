@@ -5,10 +5,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from pydantic_bff.transformer.batcher import populate_context_with_batch
-from pydantic_bff.transformer.registry import TransformerRegistry
-from pydantic_bff.transformer.registry import build_transform_annotated
-from pydantic_bff.transformer.types import BatchArg
+from fastbff.transformer.batcher import populate_context_with_batch
+from fastbff.transformer.registry import TransformerRegistry
+from fastbff.transformer.registry import build_transform_annotated
+from fastbff.transformer.types import BatchArg
 
 
 @dataclass(frozen=True)

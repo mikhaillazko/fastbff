@@ -6,13 +6,13 @@ from typing import Annotated
 from fastapi import Depends
 from pydantic import BaseModel
 
-from pydantic_bff import BatchArg
-from pydantic_bff import InjectorRegistry
-from pydantic_bff import QueriesRegistry
-from pydantic_bff import Query
-from pydantic_bff import QueryExecutor
-from pydantic_bff import TransformerRegistry
-from pydantic_bff import build_transform_annotated
+from fastbff import BatchArg
+from fastbff import InjectorRegistry
+from fastbff import QueriesRegistry
+from fastbff import Query
+from fastbff import QueryExecutor
+from fastbff import TransformerRegistry
+from fastbff import build_transform_annotated
 
 
 @dataclass(frozen=True)
