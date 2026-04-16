@@ -1,0 +1,91 @@
+[project]
+name = "pydantic-bff"
+version = "0.1.0"
+description = "Simple back-end for front-end using Pydantic. Declarative data composition with typed transformers, dependency injection, and automatic N+1 avoidance."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Mikhail Lazko" },
+]
+keywords = ["pydantic", "bff", "fastapi", "dependency-injection", "data-loader", "n+1"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Framework :: FastAPI",
+    "Framework :: Pydantic :: 2",
+]
+dependencies = [
+    "pydantic>=2.0,<3",
+    "fastapi>=0.100",
+]
+
+[project.urls]
+Homepage = "https://github.com/mikhaillazko/pydantic-bff"
+Issues = "https://github.com/mikhaillazko/pydantic-bff/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.5",
+    "ty>=0.0.1a5",
+    "pre-commit>=3.7",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src",
+    "README.md",
+    "LICENSE",
+]
+exclude = [
+    "**/*_test.py",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+exclude = [
+    "**/*_test.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["src", "."]
+python_files = ["*_test.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "TID"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.lint.per-file-ignores]
+"*_test.py" = ["B018"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ty.src]
+include = ["src"]
+exclude = ["**/*_test.py"]
+
+[tool.ty.rules]
+# ty is strict by default; these rules conflict with Pydantic/FastAPI runtime
+# dynamism (Annotated aliases, model_fields on generic metaclasses, etc.).
+unresolved-attribute = "warn"
+invalid-return-type = "warn"
+invalid-type-form = "warn"
+invalid-method-override = "warn"

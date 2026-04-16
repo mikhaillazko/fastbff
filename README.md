@@ -25,7 +25,7 @@ class UserDTO(BaseModel):
     name: str
     company_id: int
 
-class BatchTeamArg(BaseModel): 
+class BatchTeamArg(BaseModel):
     team_ids: list[TeamId]
 
 class TeamDTO(BaseModel):
@@ -53,6 +53,6 @@ team_router = APIRouter(prefix='/teams')
 @team_router.get('/batch')
 async def batch_of_teams_by_ids(team_ids: list[TeamId]) -> list[TeamDTO]:
     result = await query_executor.query(list[TeamDTO], BatchTeamArg(team_ids=team_ids))
-    return result 
+    return result
 
 ```
