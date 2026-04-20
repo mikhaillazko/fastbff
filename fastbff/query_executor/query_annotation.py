@@ -2,6 +2,7 @@ import types as builtin_types
 from collections.abc import Callable
 from collections.abc import Iterable
 from typing import Any
+from typing import TypeGuard
 from typing import Union
 from typing import get_args
 from typing import get_origin
@@ -39,7 +40,7 @@ def _find_ids_param(hints: dict[str, Any], key_type: type) -> str | None:
     return None
 
 
-def _is_query_subclass(annotation: Any) -> bool:
+def _is_query_subclass(annotation: Any) -> TypeGuard[type[Query]]:
     """Check whether *annotation* is a concrete subclass of :class:`Query`."""
     try:
         return isinstance(annotation, type) and issubclass(annotation, Query) and annotation is not Query
@@ -77,7 +78,7 @@ class QueryAnnotation:
     lookups in :class:`QueryExecutor` need no further reflection.
     """
 
-    def __init__(self, original_func: Callable) -> None:
+    def __init__(self, original_func: Callable, explicit_query_type: type[Query] | None = None) -> None:
         self.original_func = original_func
         hints = get_type_hints(original_func)
         return_type = hints.get('return')
@@ -87,18 +88,26 @@ class QueryAnnotation:
             )
         self.return_type: type = return_type
 
-        # Detect Query[T] parameter
-        self.query_type: type | None = None
+        # Detect Query[T] parameter; an explicit_query_type from the decorator
+        # (``@queries(SomeQueryType)``) covers parameterless handlers that
+        # still need a query-type binding.
+        self.query_type: type | None = explicit_query_type
         self.query_param_name: str | None = None
         for param_name, param_type in hints.items():
             if param_name == 'return':
                 continue
             if _is_query_subclass(param_type):
-                if self.query_type is not None:
+                if self.query_param_name is not None:
                     raise QueryRegistrationError(
                         f'@query {original_func.__name__}: multiple Query parameters '
-                        f'({self.query_param_name}: {self.query_type.__name__}, '
+                        f'({self.query_param_name}: {self.query_type.__name__ if self.query_type else "?"}, '
                         f'{param_name}: {param_type.__name__})',
+                    )
+                if explicit_query_type is not None and explicit_query_type is not param_type:
+                    raise QueryRegistrationError(
+                        f'@query {original_func.__name__}: explicit query type '
+                        f'{explicit_query_type.__name__} does not match signature parameter '
+                        f'{param_name}: {param_type.__name__}',
                     )
                 self.query_type = param_type
                 self.query_param_name = param_name

@@ -31,7 +31,9 @@ from .di import build_provide_query_executor
 from .di import collect_dep_specs
 from .exceptions import QueryNotRegisteredError
 from .exceptions import QueryRegistrationError
+from .query_executor.query import Query
 from .query_executor.query_annotation import QueryAnnotation
+from .query_executor.query_annotation import _is_query_subclass
 from .query_executor.query_executor import QueryExecutor
 from .router import QueryRouter
 
@@ -65,9 +67,29 @@ class FastBFF:
         """Compatible with FastAPI's ``dependency_overrides_provider`` protocol."""
         return self._overrides
 
-    def queries[F: Callable](self, func: F) -> F:
-        """Register *func* as a ``@query`` handler."""
-        self._router.queries(func)
+    def queries[F: Callable](self, func_or_query_type: F | type[Query]) -> F | Callable[[F], F]:
+        """Register *func* as a ``@query`` handler.
+
+        Supports both the plain decorator form and the decorator-factory form
+        that binds an explicit :class:`Query` subclass for parameterless
+        handlers::
+
+            @app.queries
+            def fetch_users(args: FetchUsers) -> dict[int, User]: ...
+
+            @app.queries(FetchAllUsers)
+            def fetch_all_users() -> list[User]: ...
+        """
+        if _is_query_subclass(func_or_query_type):
+
+            def decorator(func: F) -> F:
+                return self._register_query(func, explicit_query_type=func_or_query_type)
+
+            return decorator
+        return self._register_query(func_or_query_type)
+
+    def _register_query[F: Callable](self, func: F, explicit_query_type: type[Query] | None = None) -> F:
+        self._router._register(func, explicit_query_type=explicit_query_type)
         annotation = self._router._query_func_annotations_registry[func]
         if annotation.query_type is not None:
             if annotation.query_type in self._query_annotations:

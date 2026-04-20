@@ -63,16 +63,13 @@ class QueryExecutor:
         annotation = self._query_annotations.get(query_type)
         if annotation is None:
             raise QueryNotRegisteredError(f'No @query registered for query object {query_type}')
-        query_param_name = annotation.query_param_name
-        if query_param_name is None:
-            raise QueryNotRegisteredError(
-                f'Query handler for {query_type.__name__!r} has no Query[T] parameter.',
-            )
 
         handler = annotation.original_func
         extra_kwargs = self.deps_for(handler)
+        query_param_name = annotation.query_param_name
+        query_kwargs = {query_param_name: query_obj} if query_param_name is not None else {}
 
-        if annotation.dict_type_key is not None:
+        if annotation.dict_type_key is not None and query_param_name is not None:
             ids_field = annotation.ids_param_name
             if ids_field is not None:
                 ids_value = getattr(query_obj, ids_field, None)
@@ -96,7 +93,7 @@ class QueryExecutor:
         )
         return self._cache.get_or_call(
             cache_key,
-            lambda: handler(**{query_param_name: query_obj}, **extra_kwargs),
+            lambda: handler(**query_kwargs, **extra_kwargs),
         )
 
 

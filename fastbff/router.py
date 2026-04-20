@@ -8,7 +8,9 @@ its registrations become part of the union of handlers scanned by
 
 from collections.abc import Callable
 
+from .query_executor.query import Query
 from .query_executor.query_annotation import QueryAnnotation
+from .query_executor.query_annotation import _is_query_subclass
 from .transformer.types import _TRANSFORMER_ANNOTATION_ATTR
 from .transformer.types import TransformerAnnotation
 
@@ -41,9 +43,33 @@ class QueryRouter:
         self._query_func_annotations_registry: dict[Callable, QueryAnnotation] = {}
         self._transformer_func_annotation_registry: dict[Callable, TransformerAnnotation] = {}
 
-    def queries[F: Callable](self, func: F) -> F:
-        """Register *func* as a ``@query`` handler on this router."""
-        annotation = QueryAnnotation(original_func=func)
+    def queries[F: Callable](self, func_or_query_type: F | type[Query]) -> F | Callable[[F], F]:
+        """Register *func* as a ``@query`` handler on this router.
+
+        Supports two forms::
+
+            @router.queries
+            def fetch_users(args: FetchUsers) -> dict[int, User]: ...
+
+            @router.queries(FetchAllUsers)
+            def fetch_all_users() -> list[User]: ...
+
+        The second form binds *func* to an explicit ``Query`` subclass for
+        parameterless handlers whose query type cannot be inferred from the
+        signature.
+        """
+        if _is_query_subclass(func_or_query_type):
+            return self._make_decorator(explicit_query_type=func_or_query_type)
+        return self._register(func=func_or_query_type)
+
+    def _make_decorator[F: Callable](self, explicit_query_type: type[Query]) -> Callable[[F], F]:
+        def decorator(func: F) -> F:
+            return self._register(func=func, explicit_query_type=explicit_query_type)
+
+        return decorator
+
+    def _register[F: Callable](self, func: F, explicit_query_type: type[Query] | None = None) -> F:
+        annotation = QueryAnnotation(original_func=func, explicit_query_type=explicit_query_type)
         self._query_func_annotations_registry[func] = annotation
         return func
 
