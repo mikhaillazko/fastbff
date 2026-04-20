@@ -1,4 +1,9 @@
-"""End-to-end Plan → Fetch → Merge flow with the simplified one-call API."""
+"""In-process Plan → Fetch → Merge flow driven via ``@app.entrypoint``.
+
+Exercises the offline path — no HTTP, no database — to keep the core
+composition semantics (``validate_batch`` + entity-level cache) covered
+independently of the FastAPI/SQLAlchemy integration test.
+"""
 
 from dataclasses import dataclass
 from typing import Annotated
