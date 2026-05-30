@@ -24,44 +24,38 @@ Larger scope — track separately once the rejection is in.
 
 ### 2. DI integration leans on FastAPI internals and signature-mutation hacks
 
-The current injection plumbing piggybacks on private FastAPI surface and
-hand-edits Python's introspection metadata to make `Depends(...)` work
-the way we want. Each one is a load-bearing trick that will quietly
-break when FastAPI changes its internals — and they pile up. The longer
-they stay, the harder the upgrade story gets.
+The injection plumbing used to hand-edit Python's introspection metadata
+in two places to make `Depends(...)` work the way we want. See
+`docs/adr/0001-di-rework.md` for the full options analysis.
 
 Sites:
 
-- `fastbff/query_executor/query_executor.py:116` —
-  `QueryExecutor.__signature__ = Signature(parameters=[])`. Forces
-  FastAPI's `get_dependant` to ignore `__init__` params when an
-  endpoint declares `Depends(QueryExecutor)`. The override to
-  `provide_query_executor` is what actually fires; the empty signature
-  is a workaround for FastAPI introspecting the class anyway.
+- ~~`QueryExecutor.__signature__ = Signature(parameters=[])`~~ —
+  **resolved** (Option F). `QueryExecutor.__init__` is now
+  parameterless, so `inspect.signature(QueryExecutor)` is naturally
+  empty; no `__init__` params leak in when an endpoint declares
+  `Depends(QueryExecutor)`. Populated executors are built via
+  `QueryExecutor.create(...)`. Guarded by
+  `test_query_executor_has_empty_signature`.
 - `fastbff/di.py:149` —
   `provide_query_executor.__signature__ = Signature(parameters=...)`.
   Synthesises a function signature listing the union of every
   registered handler's deps so FastAPI resolves them all at once.
+  Kept deliberately: assigning `__signature__` is PEP 362, the
+  standard way to give a generated callable a programmatic signature
+  (Pydantic does the same for model `__init__`). `inspect.signature`
+  — the only thing FastAPI reads — honors it by spec, so this is not
+  coupling to FastAPI internals.
 
-**Rework — pick one (or layer them)**:
+**Remaining options** (none required for the surface concern, which the
+one legitimate `__signature__` line above does not represent):
 
-1. **Lean only on FastAPI's public surface**. Replace
-   `provide_query_executor.__signature__` mutation with an
-   `exec`-built function that has a real Python signature, so the
-   factory looks indistinguishable from a hand-written one.
-   `QueryExecutor.__signature__ = Signature([])` stays — it is
-   irreducible under the current DX where endpoints write
-   `Depends(QueryExecutor)`.
-2. **Own the DI graph**. Walk the registered handlers ourselves and
-   resolve `Depends(...)` via a tiny container that understands
-   FastAPI-style `Annotated[..., Depends(factory)]` parameters. The
-   resolver is small (we already have `collect_dep_specs`); the
-   payoff is one fewer `__signature__` mutation and a stable internal
-   API that does not move with FastAPI releases.
-
-Whichever path is picked, the goal is: at most one `__signature__ =`
-line (on `QueryExecutor`), and no other reaching into FastAPI
-internals.
+- **Own the DI graph** (ADR Option C). Walk registered handlers and
+  resolve `Depends(...)` ourselves. Zero version coupling, but a
+  non-trivial rewrite for a benefit that has not bitten us.
+- **`QueryExecutor[Q1, ...]` per-endpoint scoping** (ADR Option D).
+  The only option that improves something users feel (per-endpoint
+  resolution cost); prototype with explicit listing before committing.
 
 ---
 
@@ -80,27 +74,16 @@ Users (especially in tests) expect post-mount binds to take effect.
   prefer rewriting `bind` to write to both if mounted).
 - Or document loudly + raise on `bind` after `mount`.
 
-### 4. `_to_hashable` blows up on common Pydantic shapes
-
-`fastbff/query_executor/query_cache.py:50` does not handle Pydantic
-`BaseModel`, `datetime`, `UUID`, dataclasses, etc. The first time a user
-nests a model inside a `Query` field, the cache key construction raises
-`TypeError: unhashable type` from deep inside cache code.
-
-**Fix**: extend `_to_hashable` to dispatch on `BaseModel`
-(`v.model_dump(mode='python')` then recurse) and dataclasses, and raise
-`FastBFFError` with a guidance message for anything else still unhashable.
-
 ---
 
 ## P2 — packaging and release process
 
-### 5. `pyproject.toml` status is `Alpha` and version is `0.1.0`
+### 4. `pyproject.toml` status is `Alpha` and version is `0.1.0`
 
 `pyproject.toml:13`. For "wide developer use" this signals "do not depend
 on this." Decide what stability bar we are committing to and bump.
 
-### 6. `publish.yml` has no tag/version guard
+### 5. `publish.yml` has no tag/version guard
 
 `.github/workflows/publish.yml` runs `uv publish` on any release event
 without checking the git tag matches `pyproject.toml` `version`, and
@@ -110,13 +93,13 @@ without a TestPyPI dry-run.
 - Add a step that fails if `pyproject.toml` `version` != `${GITHUB_REF_NAME#v}`.
 - Optionally add a manual-dispatch TestPyPI workflow before promoting.
 
-### 7. No `__version__` constant
+### 6. No `__version__` constant
 
 `fastbff/__init__.py` should expose `__version__` (read from package
 metadata via `importlib.metadata.version("fastbff")` so it stays in sync
 with `pyproject.toml`).
 
-### 8. No `CHANGELOG.md`, no `CONTRIBUTING.md`, no docs site
+### 7. No `CHANGELOG.md`, no `CONTRIBUTING.md`, no docs site
 
 For wide adoption:
 - `CHANGELOG.md` (Keep-a-Changelog format) so users can scan before
@@ -147,6 +130,5 @@ test per row:
 
 - Async handler / async transformer (rejected at registration with a
   clear error).
-- `Query` with a nested Pydantic model field (cache key path).
 - `validate_batch` over a large page (sanity / performance smoke).
 - `bind()` called after `mount()` (whatever the chosen semantics).

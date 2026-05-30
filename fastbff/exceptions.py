@@ -39,6 +39,16 @@ class QueryNotRegisteredError(FastBFFError, KeyError):
     """
 
 
+class CacheKeyError(FastBFFError, TypeError):
+    """Raised when a ``Query`` field value cannot be turned into a cache key.
+
+    fastbff caches query results keyed by their arguments, so every field on a
+    ``Query`` must be hashable or a shape fastbff can normalise (containers,
+    pydantic models, dataclasses). Subclasses :class:`TypeError` because the
+    underlying failure is an unhashable value.
+    """
+
+
 class BatchContextMissingError(FastBFFError, RuntimeError):
     """Raised when a transformer with a ``BatchArg`` is invoked without a batching context.
 

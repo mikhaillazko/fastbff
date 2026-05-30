@@ -1,9 +1,7 @@
-from collections.abc import Mapping
 from typing import Any
 from typing import cast
 
 from .query import Query
-from .query_annotation import QueryAnnotation
 from .query_cache import MISSING
 from .query_executor import QueryExecutor
 
@@ -11,17 +9,13 @@ from .query_executor import QueryExecutor
 class QueryExecutorMock(QueryExecutor):
     """Test double. Stub per-query return values with :meth:`stub_query`;
     un-stubbed queries fall through to the real :class:`QueryExecutor`.
+
+    Build one with :meth:`QueryExecutor.create`, e.g.
+    ``QueryExecutorMock.create(query_annotations=app.query_annotations)``.
     """
 
-    def __init__(
-        self,
-        query_annotations: Mapping[type, QueryAnnotation],
-    ) -> None:
-        super().__init__(
-            query_annotations,
-            resolved_deps=None,
-            handler_index=None,
-        )
+    def __init__(self) -> None:
+        super().__init__()
         self._query_stubs: dict[type, Any] = {}
 
     def stub_query[T](self, query_type: type[Query[T]], return_value: T) -> None:

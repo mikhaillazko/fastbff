@@ -18,7 +18,7 @@ class FetchPlainQuery(Query[PlainResult]):
 
 def test_mock_stub_query_returns_stubbed_value(app) -> None:
     # Arrange
-    mock = QueryExecutorMock(query_annotations=app.query_annotations)
+    mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
     expected = PlainResult(value='stubbed')
     mock.stub_query(FetchPlainQuery, expected)
 
@@ -37,7 +37,7 @@ def test_mock_reset_clears_query_stubs(app) -> None:
     def fetch_plain(query_args: FetchPlainQuery) -> PlainResult:
         return spy(request=query_args)
 
-    mock = QueryExecutorMock(query_annotations=app.query_annotations)
+    mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
     mock.stub_query(FetchPlainQuery, PlainResult(value='stubbed'))
     mock.reset_mock()
 

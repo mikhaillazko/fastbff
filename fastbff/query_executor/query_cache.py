@@ -1,5 +1,11 @@
 from collections.abc import Callable
+from dataclasses import asdict
+from dataclasses import is_dataclass
 from typing import Any
+
+from pydantic import BaseModel
+
+from fastbff.exceptions import CacheKeyError
 
 
 class _Missing:
@@ -54,4 +60,20 @@ def _to_hashable(v: Any) -> Any:
         return frozenset(_to_hashable(i) for i in v)
     if isinstance(v, dict):
         return frozenset((k, _to_hashable(val)) for k, val in v.items())
+    if isinstance(v, BaseModel):
+        return _to_hashable(v.model_dump(mode='python'))
+    if is_dataclass(v) and not isinstance(v, type):
+        return _to_hashable(asdict(v))
+    try:
+        hash(v)
+    except TypeError as exc:
+        type_name = type(v).__name__
+        raise CacheKeyError(
+            f'Cannot build a cache key from a {type_name!r} value on a Query field: '
+            'it is not hashable. fastbff caches query results by their arguments, so every '
+            'Query field must be hashable or a shape fastbff can normalise (lists, tuples, '
+            'sets, dicts, pydantic models, dataclasses). Make '
+            f'{type_name!r} hashable — e.g. a frozen dataclass or '
+            '`model_config = ConfigDict(frozen=True)` — or drop it from the Query.',
+        ) from exc
     return v

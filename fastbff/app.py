@@ -29,6 +29,7 @@ from .query_executor.query_annotation import QueryAnnotation
 from .query_executor.query_annotation import _is_query_subclass
 from .query_executor.query_executor import QueryExecutor
 from .router import QueryRouter
+from .transformer.fetch_discovery import discover_fetched_queries
 
 
 class FastBFF:
@@ -176,6 +177,33 @@ class FastBFF:
         self._provide_query_executor = None
         self._finalized_for = None
 
+    def _validate_transformer_fetch_targets(self) -> None:
+        """Best-effort: each transformer's fetch targets must be registered.
+
+        Static AST walk over each transformer body to collect
+        ``query_executor.fetch(<QueryCls>(...))`` calls (see
+        :func:`discover_fetched_queries` for recognised idioms). Any fetched
+        :class:`Query` subclass that isn't in the registry raises
+        :class:`TransformerRegistrationError` here, surfacing what would
+        otherwise be a request-time :class:`QueryNotRegisteredError`.
+
+        Misses are silent — discovery cannot resolve every shape (e.g.
+        ``self.qe.fetch(...)``), so we never *invent* a missing target.
+        """
+        registered = self._query_annotations
+        for transformer_func in self._router._transformer_func_annotation_registry:
+            fetched = discover_fetched_queries(transformer_func, query_executor_type=QueryExecutor)
+            missing = [
+                cls for cls in fetched if isinstance(cls, type) and issubclass(cls, Query) and cls not in registered
+            ]
+            if missing:
+                names = ', '.join(sorted(cls.__name__ for cls in missing))
+                raise TransformerRegistrationError(
+                    f'Transformer {transformer_func.__name__!r} fetches query types that are '
+                    f'not registered: {names}. Register them with @app.queries (or '
+                    f'@router.queries) before mounting.',
+                )
+
     def finalize(self) -> Callable:
         """Synthesize ``provide_query_executor`` from the current registrations.
 
@@ -189,6 +217,8 @@ class FastBFF:
         if self._provide_query_executor is not None and self._finalized_for == key:
             return self._provide_query_executor
 
+        self._validate_transformer_fetch_targets()
+
         specs, handler_index = collect_dep_specs(
             handlers,
             query_executor_type=QueryExecutor,
@@ -197,7 +227,7 @@ class FastBFF:
             specs=specs,
             handler_index=handler_index,
             query_annotations_factory=lambda: self._query_annotations,
-            query_executor_cls=QueryExecutor,
+            query_executor_factory=QueryExecutor.create,
         )
         self._provide_query_executor = provide
         self._finalized_for = key

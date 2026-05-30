@@ -60,7 +60,7 @@ CI matrix runs Python 3.12, 3.13, 3.14. The local pin is in `.python-version`.
 - **Call-level cache** for plain return types (key = handler + args).
 - **Entity-level cache** for `dict[K, V]`-returning queries that have an `Iterable[K]` field on their `Query` subclass. Overlapping ID sets share cached entries, only missing IDs are fetched from the underlying handler. Absences are remembered, so re-asking does not re-hit the backend.
 
-Setting `QueryExecutor.__signature__ = Signature([])` at module bottom is load-bearing: it stops FastAPI's `get_dependant` from treating `__init__` params as request params when an endpoint declares `Depends(QueryExecutor)`. The override to `provide_query_executor` fires at solve time.
+`QueryExecutor.__init__` is parameterless so that `inspect.signature(QueryExecutor)` is naturally empty: when an endpoint declares `Depends(QueryExecutor)`, FastAPI's `get_dependant` finds no `__init__` params to treat as request params. The override to `provide_query_executor` fires at solve time and supplies the real instance. Build a populated executor (in tests, the factory) via `QueryExecutor.create(query_annotations, ...)`.
 
 ### `validate_batch` + `BatchArg` + `TransformerAnnotation`
 

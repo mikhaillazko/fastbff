@@ -1,6 +1,7 @@
 """Tests for ``QueryExecutor.fetch`` — call-level and entity-level caching."""
 
 from dataclasses import dataclass
+from inspect import signature
 from unittest.mock import MagicMock
 
 from fastbff.query_executor.query import Query
@@ -211,8 +212,19 @@ def test_fetch_absent_id_becomes_present_in_new_executor(app, query_executor) ->
     query_executor.fetch(FetchEntitiesQuery(ids=frozenset({1})))
 
     # Act
-    fresh_executor = QueryExecutor(query_annotations=app.query_annotations)
+    fresh_executor = QueryExecutor.create(query_annotations=app.query_annotations)
     fresh_executor.fetch(FetchEntitiesQuery(ids=frozenset({1})))
 
     # Assert
     assert len(call_args) == 2
+
+
+def test_query_executor_has_empty_signature() -> None:
+    """Endpoints declare ``Annotated[QueryExecutor, Depends(QueryExecutor)]``, so
+    FastAPI introspects ``inspect.signature(QueryExecutor)`` at startup. The
+    parameterless ``__init__`` must keep that signature empty — otherwise
+    ``__init__`` params would leak in as request fields. Guards the invariant
+    that replaced the former ``QueryExecutor.__signature__ = Signature([])``
+    mutation.
+    """
+    assert list(signature(QueryExecutor).parameters) == []

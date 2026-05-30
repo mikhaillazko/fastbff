@@ -1,8 +1,8 @@
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Mapping
-from inspect import Signature
 from typing import Any
+from typing import Self
 
 from fastbff.exceptions import QueryNotRegisteredError
 
@@ -26,19 +26,41 @@ class QueryExecutor:
     once per request by FastAPI's ``solve_dependencies`` when the endpoint
     asks for the executor via ``Depends(provide_query_executor)``; dispatch
     is a dict lookup.
+
+    ``__init__`` is intentionally parameterless: an endpoint declares
+    ``Annotated[QueryExecutor, Depends(QueryExecutor)]``, so FastAPI
+    introspects ``inspect.signature(QueryExecutor)`` at startup. A
+    parameterless constructor presents an empty signature naturally — no
+    ``__init__`` params leak in as request fields, and at request time the
+    ``QueryExecutor → provide_query_executor`` override supplies the real
+    instance. Build a populated executor with :meth:`create`.
     """
 
-    def __init__(
-        self,
+    def __init__(self) -> None:
+        self._query_annotations: Mapping[type, QueryAnnotation] = {}
+        self._cache = QueryCache()
+        self._resolved_deps: dict[str, Any] = {}
+        self._handler_index: dict[Callable, dict[str, Any]] = {}
+
+    @classmethod
+    def create(
+        cls,
         query_annotations: Mapping[type, QueryAnnotation],
         *,
         resolved_deps: dict[str, Any] | None = None,
         handler_index: dict[Callable, dict[str, Any]] | None = None,
-    ) -> None:
-        self._query_annotations = query_annotations
-        self._cache = QueryCache()
-        self._resolved_deps = resolved_deps or {}
-        self._handler_index = handler_index or {}
+    ) -> Self:
+        """Build a populated executor.
+
+        This is the canonical constructor for both ``provide_query_executor``
+        and tests. ``__init__`` stays parameterless so the class keeps an
+        empty FastAPI-facing signature (see the class docstring).
+        """
+        executor = cls()
+        executor._query_annotations = query_annotations
+        executor._resolved_deps = resolved_deps or {}
+        executor._handler_index = handler_index or {}
+        return executor
 
     def deps_for(self, func: Callable) -> dict[str, Any]:
         """Return the resolved kwargs map for *func* (handler or transformer).
@@ -106,11 +128,3 @@ class QueryExecutor:
             return result
 
         return self._cache.get_or_call(cache_key, fetcher)
-
-
-# FastAPI introspects ``Depends(QueryExecutor)`` by reading
-# ``inspect.signature(QueryExecutor)``, which would otherwise expose
-# ``__init__`` parameters as request params. The override to
-# ``provide_query_executor`` fires at solve time; the empty signature just
-# keeps ``get_dependant`` happy.
-QueryExecutor.__signature__ = Signature(parameters=[])  # type: ignore[attr-defined]

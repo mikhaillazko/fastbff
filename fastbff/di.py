@@ -119,18 +119,19 @@ def build_provide_query_executor(
     specs: list[DepSpec],
     handler_index: HandlerDepIndex,
     query_annotations_factory: Callable[[], dict[type, Any]],
-    query_executor_cls: type,
+    query_executor_factory: Callable[..., Any],
 ) -> Callable:
     """Build a ``provide_query_executor(**deps)`` factory with a synthesized signature.
 
     The returned function is suitable for ``Depends(provide_query_executor)``
     on FastAPI endpoints — FastAPI will resolve every entry in *specs* and
-    pass them as kwargs. The factory constructs a :class:`QueryExecutor`
-    holding the resolved map.
+    pass them as kwargs. *query_executor_factory* is called with the resolved
+    map to construct a :class:`QueryExecutor` (in practice
+    ``QueryExecutor.create``).
     """
 
     def provide_query_executor(**resolved: Any) -> Any:
-        return query_executor_cls(
+        return query_executor_factory(
             query_annotations=query_annotations_factory(),
             resolved_deps=resolved,
             handler_index=handler_index,

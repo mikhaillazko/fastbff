@@ -17,4 +17,4 @@ def query_router() -> QueryRouter:
 
 @pytest.fixture()
 def query_executor(app: FastBFF) -> QueryExecutor:
-    return QueryExecutor(query_annotations=app.query_annotations)
+    return QueryExecutor.create(query_annotations=app.query_annotations)
