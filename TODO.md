@@ -12,15 +12,33 @@ Completed items have been removed; check `git log` for the fix details.
 
 ## P0 — credibility blockers (a new user gives up in 30 seconds)
 
-### 1. Async handlers and transformers are accepted but broken
+### 1. ~~Async handlers and transformers — silent corruption~~ — resolved (native support)
 
-`QueryExecutor.fetch` (`fastbff/query_executor/query_executor.py:61`) and
-`TransformerAnnotation._validate` (`fastbff/transformer/types.py:116`)
-call handlers synchronously. An `async def fetch_users(...)` handler will
-have its coroutine object cached and returned — silent corruption.
+`async def` handlers and transformers are now **supported**, not rejected,
+using the same worker-thread bridge Starlette uses for sync endpoints (so it
+rides FastAPI's own concurrency model — one thread pool, asyncio or trio):
 
-**Fix (proper)**: an `async fetch` path with parallel coroutine dispatch.
-Larger scope — track separately once the rejection is in.
+- A **sync** endpoint needs no extra code — Starlette runs it in an anyio
+  worker thread, so `query_executor.fetch(...)` bridges async handlers as-is.
+- An **async** endpoint uses `await query_executor.afetch(query)`, which
+  offloads `fetch` via `anyio.to_thread.run_sync`.
+- `QueryExecutor.call_handler` bridges any `async def` handler/transformer
+  reached during a fetch onto the loop via `anyio.from_thread.run(...)` (blocks
+  the worker thread, never the loop). `QueryCache` is lock-guarded for
+  concurrent `afetch` (e.g. `asyncio.gather`).
+
+Misuse raises a clear `AsyncDispatchError` (a coroutine's own `RuntimeError` is
+distinguished and propagated): a purely sync `fetch` reaching an async handler,
+or an async handler calling sync `fetch` from the loop thread (use
+`await afetch(...)` there).
+
+Covered by `fastbff/query_executor/async_dispatch_test.py` (incl. the
+async-handler-through-a-sync-transformer N+1 case, the sync-endpoint
+worker-thread bridge, and a concurrent-`afetch` cache-safety smoke) and the
+`/teams-async` route in `integration_tests/`.
+
+**Possible follow-up**: greater inter-query concurrency in the transformer
+path (today each transformer's bulk fetch bridges one at a time).
 
 ### 2. DI integration leans on FastAPI internals and signature-mutation hacks
 
@@ -128,7 +146,7 @@ For wide adoption:
 Cases that bite first-time users; we should have at least one regression
 test per row:
 
-- Async handler / async transformer (rejected at registration with a
-  clear error).
+- ~~Async handler / async transformer.~~ — supported + covered by
+  `async_dispatch_test.py`.
 - `validate_batch` over a large page (sanity / performance smoke).
 - `bind()` called after `mount()` (whatever the chosen semantics).

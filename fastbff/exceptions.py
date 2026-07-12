@@ -49,6 +49,22 @@ class CacheKeyError(FastBFFError, TypeError):
     """
 
 
+class AsyncDispatchError(FastBFFError, RuntimeError):
+    """Raised when an ``async def`` handler/transformer is invoked on a path that cannot await it.
+
+    fastbff supports async handlers by bridging their coroutine onto the
+    running event loop from a worker thread (``QueryExecutor.afetch``). Two
+    cases cannot be bridged and raise this error instead of silently returning
+    an unawaited coroutine:
+
+    * Sync ``fetch`` was called (no running loop to bridge to) — use
+      ``await query_executor.afetch(...)`` from an async endpoint.
+    * An async handler called sync ``fetch`` for another async query while
+      itself running on the loop thread — use ``await query_executor.afetch(...)``
+      inside async handlers to avoid the self-deadlock.
+    """
+
+
 class BatchContextMissingError(FastBFFError, RuntimeError):
     """Raised when a transformer with a ``BatchArg`` is invoked without a batching context.
 

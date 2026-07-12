@@ -2,6 +2,7 @@ import types as builtin_types
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
+from inspect import iscoroutinefunction
 from typing import Any
 from typing import Union
 from typing import get_args
@@ -12,6 +13,7 @@ from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
 from pydantic_core.core_schema import ValidationInfo
 
+from fastbff.exceptions import AsyncDispatchError
 from fastbff.exceptions import BatchContextMissingError
 from fastbff.exceptions import TransformerRegistrationError
 from fastbff.reflection import cached_signature
@@ -135,11 +137,21 @@ class TransformerAnnotation:
             ids = info.context[self.batch_key]
             keyword[self.batch_arg_name] = BatchArg(ids=frozenset(ids))
 
-        if info.context is not None:
-            query_executor = info.context.get('query_executor')
-            if query_executor is not None:
-                keyword.update(query_executor.deps_for(self.original_func))
+        query_executor = info.context.get('query_executor') if info.context is not None else None
+        if query_executor is not None:
+            keyword.update(query_executor.deps_for(self.original_func))
+            # Route through the executor so an ``async def`` transformer is
+            # bridged onto the event loop when running under ``afetch`` (same
+            # mechanism as async query handlers).
+            return query_executor.call_handler(self.original_func, *positional, **keyword)
 
+        if iscoroutinefunction(self.original_func):
+            raise AsyncDispatchError(
+                f'async transformer {self.original_func.__name__!r} was validated without a '
+                'query_executor in context, so its coroutine cannot be awaited. Drive the '
+                'model through a `@queries` handler (or `validate_batch`/`afetch`) so the '
+                'executor is available to bridge it.',
+            )
         return self.original_func(*positional, **keyword)
 
     def __repr__(self) -> str:

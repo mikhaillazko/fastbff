@@ -62,6 +62,16 @@ CI matrix runs Python 3.12, 3.13, 3.14. The local pin is in `.python-version`.
 
 `QueryExecutor.__init__` is parameterless so that `inspect.signature(QueryExecutor)` is naturally empty: when an endpoint declares `Depends(QueryExecutor)`, FastAPI's `get_dependant` finds no `__init__` params to treat as request params. The override to `provide_query_executor` fires at solve time and supplies the real instance. Build a populated executor (in tests, the factory) via `QueryExecutor.create(query_annotations, ...)`.
 
+#### Async handlers/transformers (the anyio worker-thread bridge)
+
+`async def` handlers and transformers are supported. The wrinkle is that transformers run as **synchronous** Pydantic validators (`with_info_plain_validator_function`), so the transformer-driven N+1 fetch — the place you'd most want async I/O — cannot `await` in place. fastbff bridges using the same primitive Starlette uses for sync endpoints, so it rides FastAPI's existing concurrency model (one thread pool, asyncio **or** trio backend):
+
+- **Sync endpoint (no extra code).** Starlette already runs a `def` endpoint in an anyio worker thread, so it can call `query_executor.fetch(...)` directly and async handlers still bridge — the endpoint looks identical whether handlers are sync or async.
+- **Async endpoint.** Use `await query_executor.afetch(query)`, which offloads the synchronous `fetch` machinery to a worker thread via `anyio.to_thread.run_sync` (the same bounded pool Starlette uses).
+- Every handler/transformer call goes through `QueryExecutor.call_handler`: sync callables run inline (in the worker thread); for an `async def` callable it submits the coroutine to the host loop with `anyio.from_thread.run(...)`, blocking the *worker* thread — never the loop. `TransformerAnnotation._validate` dispatches through `call_handler` too, so async transformers bridge the same way.
+- Two cases can't be bridged and raise `AsyncDispatchError` (never a bare coroutine): a purely synchronous `fetch` reaching an async handler (no worker-thread portal), and an async handler calling sync `fetch` from the loop thread (would self-deadlock — use `await afetch(...)` there). A `RuntimeError` raised by the coroutine *itself* is distinguished from a bridging failure by the `bridged` flag in `call_handler` and re-raised unchanged.
+- `QueryCache` is lock-guarded (compute-outside-lock) so concurrent `afetch` (e.g. `asyncio.gather`) on parallel worker threads is safe; the `fetcher` runs outside the lock so bridging can't deadlock against it.
+
 ### `validate_batch` + `BatchArg` + `TransformerAnnotation`
 
 `validate_batch(Model, rows, query_executor=...)` (`fastbff/batch.py`) is the two-phase orchestrator for a page of rows:

@@ -151,6 +151,16 @@ def list_teams(
     return query_executor.fetch(FetchTeams())
 
 
+@fastapi_app.get('/teams-async')
+async def list_teams_async(
+    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+) -> list[TeamDTO]:
+    # Async endpoint: ``afetch`` offloads the sync fetch machinery to a worker
+    # thread and bridges async handlers back to the loop. Same payload and same
+    # single-bulk-SELECT N+1 contract as the sync ``/teams`` route.
+    return await query_executor.afetch(FetchTeams())
+
+
 fastbff_app = FastBFF()
 fastbff_app.include_router(query_router)
 fastbff_app.mount(fastapi_app)

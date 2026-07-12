@@ -24,6 +24,10 @@ classifiers = [
 dependencies = [
     "pydantic>=2.0,<3",
     "fastapi>=0.100",
+    # Async dispatch bridges coroutines from worker threads onto the running
+    # loop with anyio (the same primitive Starlette uses for sync endpoints),
+    # so it must be backend-agnostic and explicit rather than transitive.
+    "anyio>=3.4",
 ]
 
 [project.optional-dependencies]

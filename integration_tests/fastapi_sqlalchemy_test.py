@@ -20,6 +20,9 @@ from sqlalchemy.orm import Session
 
 @pytest.fixture()
 def engine() -> Engine:
+    # The module-level StaticPool engine keeps one in-memory connection for the
+    # whole process, so reset the schema per test to keep seed data isolated.
+    Base.metadata.drop_all(db_engine)
     Base.metadata.create_all(db_engine)
     with Session(db_engine) as session:
         session.add_all(
@@ -63,5 +66,22 @@ def test_http_route_returns_expected_payload(client: TestClient, captured_sql: l
         {'id': 3, 'owner': {'id': 10, 'name': 'u10'}},
     ]
     # Assert — overlapping owner ids collapse into a single bulk SELECT against users.
+    user_selects = [statement for statement in captured_sql if 'FROM users' in statement]
+    assert len(user_selects) == 1
+
+
+def test_async_route_returns_expected_payload(client: TestClient, captured_sql: list[str]) -> None:
+    """The async endpoint (`await afetch`) returns the same payload and holds the
+    same single-bulk-SELECT N+1 contract as the sync route, through the thread bridge."""
+    # Act
+    response = client.get('/teams-async')
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == [
+        {'id': 1, 'owner': {'id': 10, 'name': 'u10'}},
+        {'id': 2, 'owner': {'id': 20, 'name': 'u20'}},
+        {'id': 3, 'owner': {'id': 10, 'name': 'u10'}},
+    ]
     user_selects = [statement for statement in captured_sql if 'FROM users' in statement]
     assert len(user_selects) == 1

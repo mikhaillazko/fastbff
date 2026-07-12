@@ -116,3 +116,21 @@ def test_router_raises_on_duplicate_transformer_function(query_router) -> None:
     # Act & Assert
     with pytest.raises(TransformerRegistrationError, match='Duplicate @transformer registration'):
         query_router.transformer(transform_value)
+
+
+def test_async_query_handler_registers(query_router) -> None:
+    """`async def` handlers register fine — they are bridged at fetch time via afetch."""
+
+    @query_router.queries
+    async def fetch_plain(query_args: FetchPlainQuery) -> PlainResult:
+        return PlainResult(value=query_args.key)
+
+    assert fetch_plain in query_router._query_func_annotations_registry
+
+
+def test_async_transformer_registers(query_router) -> None:
+    @query_router.transformer
+    async def transform_value(value: str) -> str:
+        return value
+
+    assert transform_value in query_router._transformer_func_annotation_registry

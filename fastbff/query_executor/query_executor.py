@@ -1,9 +1,14 @@
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Mapping
+from inspect import iscoroutinefunction
 from typing import Any
 from typing import Self
 
+import anyio.from_thread
+import anyio.to_thread
+
+from fastbff.exceptions import AsyncDispatchError
 from fastbff.exceptions import QueryNotRegisteredError
 
 from .query import Query
@@ -81,6 +86,62 @@ class QueryExecutor:
                 out[arg_name] = self._resolved_deps[slot]
         return out
 
+    def call_handler(self, func: Callable, /, *args: Any, **kwargs: Any) -> Any:
+        """Invoke a handler or transformer, bridging ``async def`` callables to the loop.
+
+        Sync callables run inline. For an ``async def`` callable we submit its
+        coroutine to the host event loop with :func:`anyio.from_thread.run`,
+        which blocks the *current worker thread* — never the loop — until it
+        resolves. This is the same primitive Starlette uses, so it works inside
+        both a sync FastAPI endpoint (which Starlette already runs in a worker
+        thread) and :meth:`afetch`, and on asyncio or trio backends alike.
+
+        Raises :class:`AsyncDispatchError` when there is no worker-thread portal
+        to bridge through: a purely synchronous ``fetch`` reached an async
+        handler, or an async handler called sync ``fetch`` from the loop thread
+        (which would self-deadlock — use ``await afetch`` there instead). A
+        ``RuntimeError`` raised by the coroutine *itself* is left to propagate
+        unchanged, distinguished by the ``bridged`` flag.
+        """
+        if not iscoroutinefunction(func):
+            return func(*args, **kwargs)
+
+        bridged = False
+
+        async def run_on_loop() -> Any:
+            nonlocal bridged
+            bridged = True
+            return await func(*args, **kwargs)
+
+        try:
+            return anyio.from_thread.run(run_on_loop)
+        except RuntimeError as error:
+            if bridged:
+                raise  # the coroutine itself raised — not a bridging failure
+            name = getattr(func, '__name__', repr(func))
+            raise AsyncDispatchError(
+                f'async {name!r} was reached on a path that cannot await it. Call it through '
+                'a sync FastAPI endpoint (Starlette runs sync endpoints in a worker thread, '
+                'where fastbff bridges the coroutine onto the loop) or via '
+                '`await query_executor.afetch(...)` from an async endpoint. Inside an async '
+                'handler, use `await query_executor.afetch(...)` for further fetches rather '
+                'than sync `fetch`.',
+            ) from error
+
+    async def afetch[T](self, query_obj: Query[T]) -> T:
+        """Async entry point for :meth:`fetch` that supports ``async def`` handlers.
+
+        Runs the (synchronous) :meth:`fetch` machinery on a worker thread via
+        :func:`anyio.to_thread.run_sync`; any ``async def`` handler or
+        transformer reached during that fetch is bridged back onto the loop by
+        :meth:`call_handler`. Use this from ``async def`` FastAPI endpoints.
+
+        A **sync** endpoint does not need this — Starlette already runs sync
+        endpoints in a worker thread, so it can call :meth:`fetch` directly and
+        async handlers still bridge.
+        """
+        return await anyio.to_thread.run_sync(self.fetch, query_obj)
+
     def fetch[T](self, query_obj: Query[T]) -> T:
         # Late import — fastbff.batch depends on QueryExecutor; importing it
         # at module top would create a cycle.
@@ -106,7 +167,8 @@ class QueryExecutor:
                     result = self._cache.get_or_fetch_entities(
                         bucket_key,
                         ids,
-                        lambda missing: handler(
+                        lambda missing: self.call_handler(
+                            handler,
                             **{query_param_name: query_obj.model_copy(update={ids_field: missing})},
                             **extra_kwargs,
                         ),
@@ -122,7 +184,7 @@ class QueryExecutor:
         wrap_info = annotation.auto_wrap
 
         def fetcher() -> Any:
-            result = handler(**query_kwargs, **extra_kwargs)
+            result = self.call_handler(handler, **query_kwargs, **extra_kwargs)
             if wrap_info is not None:
                 return apply_auto_wrap(result, wrap_info, self)
             return result

@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Callable
 from dataclasses import asdict
 from dataclasses import is_dataclass
@@ -22,19 +23,31 @@ class QueryCache:
     - Entity-level : stores individual ``dict[K, V]`` entries so overlapping id
                      sets (e.g. ``{1,2,3}`` then ``{2,3,4}``) only fetch the
                      missing ids.
+
+    Thread-safe: under ``QueryExecutor.afetch`` several fetches can run on
+    worker threads concurrently (e.g. ``asyncio.gather``). Cache *mutations*
+    are guarded by a lock, but the ``fetcher`` callable runs **outside** the
+    lock — it may bridge a coroutine onto the event loop, and holding the lock
+    across that would risk a worker↔loop deadlock. Concurrent fetches of the
+    same key may therefore both run; the first result wins (``setdefault``),
+    which is consistent because handlers for a given query are idempotent.
     """
 
     def __init__(self) -> None:
         self._call_cache: dict[tuple, Any] = {}
         self._entity_cache: dict[tuple, dict[Any, Any]] = {}
+        self._lock = threading.RLock()
 
     def build_key(self, func: Any, kwargs: dict[str, Any], *extra: Any) -> tuple:
         return (func, *extra, frozenset((k, _to_hashable(v)) for k, v in kwargs.items()))
 
     def get_or_call(self, key: tuple, fetcher: Callable[[], Any]) -> Any:
-        if key not in self._call_cache:
-            self._call_cache[key] = fetcher()
-        return self._call_cache[key]
+        with self._lock:
+            if key in self._call_cache:
+                return self._call_cache[key]
+        result = fetcher()
+        with self._lock:
+            return self._call_cache.setdefault(key, result)
 
     def get_or_fetch_entities(
         self,
@@ -43,14 +56,18 @@ class QueryCache:
         fetcher: Callable[[frozenset[Any]], dict[Any, Any]],
     ) -> dict[Any, Any]:
         """Return a mapping for the requested ids, fetching only those not yet cached."""
-        entity_map = self._entity_cache.setdefault(bucket_key, {})
-        missing = ids - entity_map.keys()
+        with self._lock:
+            entity_map = self._entity_cache.setdefault(bucket_key, {})
+            missing = frozenset(ids - entity_map.keys())
         if missing:
-            entity_map.update(fetcher(missing))
-            for id_ in missing:
-                if id_ not in entity_map:
-                    entity_map[id_] = MISSING  # Mark as "checked but absent"
-        return {id_: entity_map[id_] for id_ in ids if entity_map.get(id_, MISSING) is not MISSING}
+            fetched = fetcher(missing)
+            with self._lock:
+                for key, value in fetched.items():
+                    entity_map.setdefault(key, value)
+                for id_ in missing:
+                    entity_map.setdefault(id_, MISSING)  # Mark as "checked but absent"
+        with self._lock:
+            return {id_: entity_map[id_] for id_ in ids if entity_map.get(id_, MISSING) is not MISSING}
 
 
 def _to_hashable(v: Any) -> Any:
