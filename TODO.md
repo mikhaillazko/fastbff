@@ -12,41 +12,10 @@ Completed items have been removed; check `git log` for the fix details.
 
 ## P0 — credibility blockers (a new user gives up in 30 seconds)
 
-### 1. ~~Async handlers and transformers — silent corruption~~ — resolved (native support)
-
-`async def` handlers and transformers are now **supported**, not rejected,
-using the same worker-thread bridge Starlette uses for sync endpoints (so it
-rides FastAPI's own concurrency model — one thread pool, asyncio or trio):
-
-- A **sync** endpoint needs no extra code — Starlette runs it in an anyio
-  worker thread, so `query_executor.fetch(...)` bridges async handlers as-is.
-- An **async** endpoint uses `await query_executor.afetch(query)`, which
-  dispatches on the handler's kind: an **async** handler (and any nested
-  `afetch` it awaits) runs **directly on the loop** — no worker thread, so
-  async composition can't exhaust the bounded pool; a **sync** handler's whole
-  subtree runs on one worker thread via `anyio.to_thread.run_sync`, preserving
-  thread affinity for request-scoped resources. Only the sync transformer-
-  validate step is offloaded to a single thread that bridges its own async
-  sub-fetches.
-- `QueryExecutor.call_handler` bridges any `async def` handler/transformer
-  reached during a *sync* fetch onto the loop via `anyio.from_thread.run(...)`
-  (blocks the worker thread, never the loop), and guards against an async
-  callable that slips past `iscoroutinefunction`. `QueryCache` is lock-guarded
-  (with async twins for the loop-native path) for concurrent `afetch`.
-
-Misuse raises a clear `AsyncDispatchError` (a coroutine's own `RuntimeError` is
-distinguished and propagated): a purely sync `fetch` reaching an async handler,
-or an async handler calling sync `fetch` from the loop thread (use
-`await afetch(...)` there).
-
-Covered by `fastbff/query_executor/async_dispatch_test.py` (incl. the
-async-handler-through-a-sync-transformer N+1 case, the sync-endpoint
-worker-thread bridge via `TestClient`, the async-composition-under-a-
-one-token-pool deadlock regression, and a concurrent-`afetch` cache-safety
-smoke) and the `/teams-async` route in `integration_tests/`.
-
-**Possible follow-up**: greater inter-query concurrency in the transformer
-path (today each transformer's bulk fetch bridges one at a time).
+Async handlers/transformers (was #1, "silent corruption") shipped as native
+support in 0.2.0 — see `git log` and the async notes in `CLAUDE.md`.
+**Open follow-up**: greater inter-query concurrency in the transformer path
+(today each transformer's bulk fetch bridges one at a time).
 
 ### 2. DI integration leans on FastAPI internals and signature-mutation hacks
 
@@ -63,7 +32,7 @@ Sites:
   `Depends(QueryExecutor)`. Populated executors are built via
   `QueryExecutor.create(...)`. Guarded by
   `test_query_executor_has_empty_signature`.
-- `fastbff/di.py:149` —
+- `fastbff/di.py:150` —
   `provide_query_executor.__signature__ = Signature(parameters=...)`.
   Synthesises a function signature listing the union of every
   registered handler's deps so FastAPI resolves them all at once.
@@ -89,9 +58,10 @@ one legitimate `__signature__` line above does not represent):
 
 ### 3. `bind()` after `mount()` does not propagate
 
-`FastBFF.mount` (`fastbff/app.py:189`) does
-`fastapi_app.dependency_overrides.update(self._overrides)` — a one-shot
-copy. Subsequent `app.bind(...)` calls write to `self._overrides` only.
+`FastBFF.mount` (`fastbff/app.py:237`) does
+`fastapi_app.dependency_overrides.update(self._overrides)` (line 245) — a
+one-shot copy. Subsequent `app.bind(...)` (`fastbff/app.py:124`) calls write
+to `self._overrides` only.
 Users (especially in tests) expect post-mount binds to take effect.
 
 **Fix options**:
@@ -104,36 +74,18 @@ Users (especially in tests) expect post-mount binds to take effect.
 
 ## P2 — packaging and release process
 
-### 4. `pyproject.toml` status is `Alpha` and version is `0.1.0`
+Shipped in 0.2.0: Beta status + version bump (`pyproject.toml`), `__version__`
+from package metadata (`fastbff/__init__.py`), `CHANGELOG.md` (Keep-a-Changelog),
+and a tag/version guard in `publish.yml`. CI hardening (SHA-pinned actions,
+least-privilege perms, coverage + Codecov, `pip-audit`, CodeQL, dependabot,
+`SECURITY.md`) also landed. See `git log`.
 
-`pyproject.toml:13`. For "wide developer use" this signals "do not depend
-on this." Decide what stability bar we are committing to and bump.
+### 4. No docs site
 
-### 5. `publish.yml` has no tag/version guard
-
-`.github/workflows/publish.yml` runs `uv publish` on any release event
-without checking the git tag matches `pyproject.toml` `version`, and
-without a TestPyPI dry-run.
-
-**Fix**:
-- Add a step that fails if `pyproject.toml` `version` != `${GITHUB_REF_NAME#v}`.
-- Optionally add a manual-dispatch TestPyPI workflow before promoting.
-
-### 6. No `__version__` constant
-
-`fastbff/__init__.py` should expose `__version__` (read from package
-metadata via `importlib.metadata.version("fastbff")` so it stays in sync
-with `pyproject.toml`).
-
-### 7. No `CHANGELOG.md`, no `CONTRIBUTING.md`, no docs site
-
-For wide adoption:
-- `CHANGELOG.md` (Keep-a-Changelog format) so users can scan before
-  upgrading.
-- `CONTRIBUTING.md` covering the uv / ruff / ty toolchain that's documented
-  in `CLAUDE.md` but invisible to outside contributors.
-- Optional but recommended: a docs site (mkdocs-material) for the
-  cookbook + reference, separate from the README.
+Optional but recommended: a docs site (mkdocs-material) for the cookbook +
+reference, separate from the README. (`CONTRIBUTING.md` and a manual-dispatch
+TestPyPI dry-run workflow, `.github/workflows/testpypi.yml`, shipped — see
+`git log`.)
 
 ---
 
@@ -155,6 +107,6 @@ Cases that bite first-time users; we should have at least one regression
 test per row:
 
 - ~~Async handler / async transformer.~~ — supported + covered by
-  `async_dispatch_test.py`.
+  `query_executor_test.py`.
 - `validate_batch` over a large page (sanity / performance smoke).
 - `bind()` called after `mount()` (whatever the chosen semantics).
