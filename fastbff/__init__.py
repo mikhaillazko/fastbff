@@ -22,10 +22,12 @@ Queries
 ~~~~~~~
 - :class:`Query` — typed query object (``Query[T]``).
 - :class:`QueryExecutor` — per-request dispatcher with call-level and
-  entity-level caching. Auto-wraps handler results through ``validate_batch``
-  when the handler's declared return type is a :class:`pydantic.BaseModel`
-  (or ``list`` thereof) with transformer fields, so end users never call
-  ``validate_batch`` directly.
+  entity-level caching. Sync endpoints call ``fetch``; ``async def`` endpoints
+  ``await afetch``, which offloads the fetch machinery to a worker thread and
+  bridges ``async def`` handlers/transformers onto the loop. Auto-wraps handler
+  results through ``validate_batch`` when the handler's declared return type is
+  a :class:`pydantic.BaseModel` (or ``list`` thereof) with transformer fields,
+  so end users never call ``validate_batch`` directly.
 - :class:`QueryExecutorMock` — test double for stubbing queries.
 
 Test helpers
