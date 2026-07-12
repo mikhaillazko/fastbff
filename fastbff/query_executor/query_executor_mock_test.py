@@ -9,22 +9,22 @@ from fastbff.query_executor.query_executor_mock import QueryExecutorMock
 
 
 @dataclass(frozen=True)
-class PlainResult:
+class _PlainResult:
     value: str
 
 
-class FetchPlainQuery(Query[PlainResult]):
+class _FetchPlainQuery(Query[_PlainResult]):
     key: str
 
 
 def test_mock_stub_query_returns_stubbed_value(app) -> None:
     # Arrange
     mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
-    expected = PlainResult(value='stubbed')
-    mock.stub_query(FetchPlainQuery, expected)
+    expected = _PlainResult(value='stubbed')
+    mock.stub_query(_FetchPlainQuery, expected)
 
     # Act
-    result = mock.fetch(FetchPlainQuery(key='anything'))
+    result = mock.fetch(_FetchPlainQuery(key='anything'))
 
     # Assert
     assert result is expected
@@ -37,17 +37,17 @@ def test_mock_afetch_honours_stub_over_async_handler(app) -> None:
     calls = 0
 
     @app.queries
-    async def fetch_plain(query_args: FetchPlainQuery) -> PlainResult:
+    async def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
         nonlocal calls
         calls += 1
-        return PlainResult(value=query_args.key)
+        return _PlainResult(value=query_args.key)
 
     mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
-    stub = PlainResult(value='stubbed')
-    mock.stub_query(FetchPlainQuery, stub)
+    stub = _PlainResult(value='stubbed')
+    mock.stub_query(_FetchPlainQuery, stub)
 
     # Act
-    result = asyncio.run(mock.afetch(FetchPlainQuery(key='real')))
+    result = asyncio.run(mock.afetch(_FetchPlainQuery(key='real')))
 
     # Assert
     assert result is stub
@@ -56,18 +56,18 @@ def test_mock_afetch_honours_stub_over_async_handler(app) -> None:
 
 def test_mock_reset_clears_query_stubs(app) -> None:
     # Arrange
-    spy = MagicMock(side_effect=lambda request: PlainResult(value=request.key))
+    spy = MagicMock(side_effect=lambda request: _PlainResult(value=request.key))
 
     @app.queries
-    def fetch_plain(query_args: FetchPlainQuery) -> PlainResult:
+    def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
         return spy(request=query_args)
 
     mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
-    mock.stub_query(FetchPlainQuery, PlainResult(value='stubbed'))
+    mock.stub_query(_FetchPlainQuery, _PlainResult(value='stubbed'))
     mock.reset_mock()
 
     # Act
-    result = mock.fetch(FetchPlainQuery(key='real'))
+    result = mock.fetch(_FetchPlainQuery(key='real'))
 
     # Assert
     assert result.value == 'real'

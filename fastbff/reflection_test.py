@@ -1,10 +1,10 @@
-"""Regression tests for PEP 563 (``from __future__ import annotations``).
+"""Reflection under PEP 563 — string-annotation resolution end-to-end.
 
-When a user enables PEP 563 in the module declaring transformers, queries,
-or models, every annotation arrives as a *string* via
-``inspect.signature(...)`` — ``param.annotation`` is ``'BatchArg[int]'``
-rather than the class. The framework must resolve those strings (via
-``typing.get_type_hints``) so:
+Regression tests for ``from __future__ import annotations``: when a user
+enables PEP 563 in the module declaring transformers, queries, or models,
+every annotation arrives as a *string* via ``inspect.signature(...)`` —
+``param.annotation`` is ``'BatchArg[int]'`` rather than the class. The
+reflection layer must resolve those strings (via ``typing.get_type_hints``) so:
 
 * batch fields on the model are still discovered (``populate_context_with_batch``),
 * ``Depends(...)`` parameters on transformers/queries are still picked up by

@@ -22,7 +22,7 @@ from fastbff.exceptions import TransformerRegistrationError
 
 
 @dataclass(frozen=True)
-class User:
+class _User:
     id: int
     name: str
 
@@ -32,33 +32,33 @@ def test_bff_app_renders_a_transformer_field() -> None:
 
     db_calls: list[frozenset[int]] = []
 
-    class FetchUsers(Query[dict[int, User]]):
+    class _FetchUsers(Query[dict[int, _User]]):
         ids: frozenset[int]
 
     @app.queries
-    def fetch_users(args: FetchUsers) -> dict[int, User]:
+    def fetch_users(args: _FetchUsers) -> dict[int, _User]:
         db_calls.append(args.ids)
-        return {i: User(id=i, name=f'u{i}') for i in args.ids}
+        return {i: _User(id=i, name=f'u{i}') for i in args.ids}
 
     @app.transformer
     def transform_owner(
         owner_id: int,
         batch: BatchArg[int],
         query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
-    ) -> User | None:
-        users = query_executor.fetch(FetchUsers(ids=batch.ids))
+    ) -> _User | None:
+        users = query_executor.fetch(_FetchUsers(ids=batch.ids))
         return users.get(owner_id)
 
     OwnerTransformerAnnotated = build_transform_annotated(transform_owner)
 
-    class TeamDTO(BaseModel):
+    class _TeamDTO(BaseModel):
         id: int
         owner: OwnerTransformerAnnotated
 
-    class FetchTeams(Query[list[TeamDTO]]):
+    class _FetchTeams(Query[list[_TeamDTO]]):
         pass
 
-    @app.queries(FetchTeams)
+    @app.queries(_FetchTeams)
     def fetch_teams() -> list[dict[str, Any]]:
         return [
             {'id': 1, 'owner': 10},
@@ -68,14 +68,14 @@ def test_bff_app_renders_a_transformer_field() -> None:
 
     provide_query_executor = app.finalize()
     query_executor = provide_query_executor()
-    results = query_executor.fetch(FetchTeams())
+    results = query_executor.fetch(_FetchTeams())
 
     assert len(db_calls) == 1
     assert db_calls[0] == frozenset({10, 20})
     assert [r.owner for r in results] == [
-        User(id=10, name='u10'),
-        User(id=20, name='u20'),
-        User(id=10, name='u10'),
+        _User(id=10, name='u10'),
+        _User(id=20, name='u20'),
+        _User(id=10, name='u10'),
     ]
 
 
@@ -84,21 +84,21 @@ def test_include_router_merges_queries_and_transformers() -> None:
 
     db_calls: list[frozenset[int]] = []
 
-    class FetchUsers(Query[dict[int, User]]):
+    class _FetchUsers(Query[dict[int, _User]]):
         ids: frozenset[int]
 
     @router.queries
-    def fetch_users(args: FetchUsers) -> dict[int, User]:
+    def fetch_users(args: _FetchUsers) -> dict[int, _User]:
         db_calls.append(args.ids)
-        return {i: User(id=i, name=f'u{i}') for i in args.ids}
+        return {i: _User(id=i, name=f'u{i}') for i in args.ids}
 
     @router.transformer
     def transform_owner(
         owner_id: int,
         batch: BatchArg[int],
         query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
-    ) -> User | None:
-        users = query_executor.fetch(FetchUsers(ids=batch.ids))
+    ) -> _User | None:
+        users = query_executor.fetch(_FetchUsers(ids=batch.ids))
         return users.get(owner_id)
 
     # build the field annotation BEFORE include_router — this captures the
@@ -106,11 +106,11 @@ def test_include_router_merges_queries_and_transformers() -> None:
     # place so the captured wrapper still works through the app's scope.
     OwnerTransformerAnnotated = build_transform_annotated(transform_owner)
 
-    class TeamDTO(BaseModel):
+    class _TeamDTO(BaseModel):
         id: int
         owner: OwnerTransformerAnnotated
 
-    class FetchTeams(Query[list[TeamDTO]]):
+    class _FetchTeams(Query[list[_TeamDTO]]):
         type: Literal['volleyball', 'football', 'basketball']
 
     teams_by_type: dict[str, list[dict[str, int]]] = {
@@ -124,7 +124,7 @@ def test_include_router_merges_queries_and_transformers() -> None:
     }
 
     @router.queries
-    def fetch_teams(args: FetchTeams) -> list[dict[str, int]]:
+    def fetch_teams(args: _FetchTeams) -> list[dict[str, int]]:
         return teams_by_type[args.type]
 
     app = FastBFF()
@@ -134,32 +134,32 @@ def test_include_router_merges_queries_and_transformers() -> None:
     query_executor = provide_query_executor()
 
     # Act
-    results = query_executor.fetch(FetchTeams(type='volleyball'))
+    results = query_executor.fetch(_FetchTeams(type='volleyball'))
 
     # Assert
     assert len(db_calls) == 1
     assert db_calls[0] == frozenset({10, 20})
     assert [r.owner for r in results] == [
-        User(id=10, name='u10'),
-        User(id=20, name='u20'),
-        User(id=10, name='u10'),
+        _User(id=10, name='u10'),
+        _User(id=20, name='u20'),
+        _User(id=10, name='u10'),
     ]
 
 
 def test_include_router_raises_on_duplicate_query_type() -> None:
-    class FetchUsers(Query[dict[int, User]]):
+    class _FetchUsers(Query[dict[int, _User]]):
         ids: frozenset[int]
 
     router = QueryRouter()
 
     @router.queries
-    def fetch_users(args: FetchUsers) -> dict[int, User]:
+    def fetch_users(args: _FetchUsers) -> dict[int, _User]:
         return {}
 
     app = FastBFF()
 
     @app.queries
-    def fetch_users_again(args: FetchUsers) -> dict[int, User]:
+    def fetch_users_again(args: _FetchUsers) -> dict[int, _User]:
         return {}
 
     with pytest.raises(QueryRegistrationError, match='Duplicate @queries registration'):
@@ -170,7 +170,7 @@ def test_include_router_raises_on_duplicate_function() -> None:
     router = QueryRouter()
     app = FastBFF()
 
-    def fetch_users(ids: frozenset[int]) -> dict[int, User]:
+    def fetch_users(ids: frozenset[int]) -> dict[int, _User]:
         return {}
 
     router.queries(fetch_users)
@@ -184,17 +184,17 @@ def test_query_annotations_is_read_only_view() -> None:
     # Arrange
     app = FastBFF()
 
-    class FetchUsers(Query[dict[int, User]]):
+    class _FetchUsers(Query[dict[int, _User]]):
         ids: frozenset[int]
 
     @app.queries
-    def fetch_users(args: FetchUsers) -> dict[int, User]:
+    def fetch_users(args: _FetchUsers) -> dict[int, _User]:
         return {}
 
     annotations = app.query_annotations
 
     # Act & Assert — the live view sees registered queries...
-    assert FetchUsers in annotations
+    assert _FetchUsers in annotations
 
     # ...but cannot be mutated through the property.
     with pytest.raises(TypeError):
@@ -208,16 +208,16 @@ def test_query_annotations_view_reflects_later_registrations() -> None:
     annotations = app.query_annotations
     assert len(annotations) == 0
 
-    class FetchUsers(Query[dict[int, User]]):
+    class _FetchUsers(Query[dict[int, _User]]):
         ids: frozenset[int]
 
     # Act
     @app.queries
-    def fetch_users(args: FetchUsers) -> dict[int, User]:
+    def fetch_users(args: _FetchUsers) -> dict[int, _User]:
         return {}
 
     # Assert
-    assert FetchUsers in annotations
+    assert _FetchUsers in annotations
 
 
 def test_include_router_raises_on_duplicate_transformer() -> None:
@@ -244,40 +244,40 @@ def test_router_dependencies_resolve_through_app_after_include() -> None:
     """A router-registered transformer should pick up the app's bind() overrides."""
 
     @dataclass(frozen=True)
-    class Greeting:
+    class _Greeting:
         message: str
 
-    class Greeter:
-        def hello(self, name: str) -> Greeting:
-            return Greeting(message=f'plain hello {name}')
+    class _Greeter:
+        def hello(self, name: str) -> _Greeting:
+            return _Greeting(message=f'plain hello {name}')
 
-    class StubGreeter:
-        def hello(self, name: str) -> Greeting:
-            return Greeting(message=f'stub hello {name}')
+    class _StubGreeter:
+        def hello(self, name: str) -> _Greeting:
+            return _Greeting(message=f'stub hello {name}')
 
     router = QueryRouter()
 
     @router.transformer
     def transform_name(
         name: str,
-        greeter: Annotated[Greeter, Depends(Greeter)],
-    ) -> Greeting:
+        greeter: Annotated[_Greeter, Depends(_Greeter)],
+    ) -> _Greeting:
         return greeter.hello(name)
 
     GreetingTransformerAnnotated = build_transform_annotated(transform_name)
 
-    class NameDTO(BaseModel):
+    class _NameDTO(BaseModel):
         model_config = {'arbitrary_types_allowed': True}
         greeting: GreetingTransformerAnnotated
 
     app = FastBFF()
-    app.bind(Greeter, lambda: StubGreeter())
+    app.bind(_Greeter, lambda: _StubGreeter())
     app.include_router(router)
 
-    class FetchOne(Query[NameDTO]):
+    class _FetchOne(Query[_NameDTO]):
         pass
 
-    @app.queries(FetchOne)
+    @app.queries(_FetchOne)
     def fetch_one() -> dict[str, str]:
         return {'greeting': 'world'}
 
@@ -287,7 +287,7 @@ def test_router_dependencies_resolve_through_app_after_include() -> None:
     def render_one(
         query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
     ) -> dict[str, str]:
-        result = query_executor.fetch(FetchOne())
+        result = query_executor.fetch(_FetchOne())
         return {'greeting': result.greeting.message}
 
     app.mount(fastapi_app)

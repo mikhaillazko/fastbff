@@ -21,18 +21,18 @@ from fastbff import QueryExecutor
 app = FastBFF()
 
 
-class UserDTO(BaseModel):
+class _UserDTO(BaseModel):
     id: int
     name: str
 
 
-class FetchUser(Query[UserDTO]):
+class _FetchUser(Query[_UserDTO]):
     user_id: int
 
 
 @app.queries
-async def fetch_user(args: FetchUser) -> UserDTO:
-    return UserDTO(id=args.user_id, name=f'u{args.user_id}')
+async def fetch_user(args: _FetchUser) -> _UserDTO:
+    return _UserDTO(id=args.user_id, name=f'u{args.user_id}')
 
 
 fastapi_app = FastAPI()
@@ -42,10 +42,10 @@ fastapi_app = FastAPI()
 def get_user(
     user_id: int,
     query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
-) -> UserDTO:
+) -> _UserDTO:
     # Sync endpoint, async handler, plain ``fetch`` — no ``afetch``, no extra
     # code. Starlette runs this in a worker thread, so the bridge just works.
-    return query_executor.fetch(FetchUser(user_id=user_id))
+    return query_executor.fetch(_FetchUser(user_id=user_id))
 
 
 app.mount(fastapi_app)

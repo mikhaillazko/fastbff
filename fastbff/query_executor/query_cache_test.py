@@ -24,13 +24,13 @@ def test_to_hashable_normalises_nested_containers() -> None:
 
 
 def test_to_hashable_handles_pydantic_model() -> None:
-    class Filter(BaseModel):
+    class _Filter(BaseModel):
         name: str
         tags: list[str]
 
-    one = _to_hashable(Filter(name='x', tags=['a', 'b']))
-    two = _to_hashable(Filter(name='x', tags=['a', 'b']))
-    other = _to_hashable(Filter(name='y', tags=['a', 'b']))
+    one = _to_hashable(_Filter(name='x', tags=['a', 'b']))
+    two = _to_hashable(_Filter(name='x', tags=['a', 'b']))
+    other = _to_hashable(_Filter(name='y', tags=['a', 'b']))
 
     assert one == two
     assert one != other
@@ -38,21 +38,21 @@ def test_to_hashable_handles_pydantic_model() -> None:
 
 
 def test_to_hashable_handles_nested_model_inside_container() -> None:
-    class Inner(BaseModel):
+    class _Inner(BaseModel):
         n: int
 
-    value = {'items': [Inner(n=1), Inner(n=2)]}
-    assert _to_hashable(value) == _to_hashable({'items': [Inner(n=1), Inner(n=2)]})
+    value = {'items': [_Inner(n=1), _Inner(n=2)]}
+    assert _to_hashable(value) == _to_hashable({'items': [_Inner(n=1), _Inner(n=2)]})
 
 
 def test_to_hashable_handles_dataclass() -> None:
     @dataclass
-    class Coord:
+    class _Coord:
         lat: float
         lon: float
 
-    one = _to_hashable(Coord(1.0, 2.0))
-    two = _to_hashable(Coord(1.0, 2.0))
+    one = _to_hashable(_Coord(1.0, 2.0))
+    two = _to_hashable(_Coord(1.0, 2.0))
     assert one == two
     assert hash(one) == hash(two)
 
@@ -66,30 +66,30 @@ def test_to_hashable_passes_through_natively_hashable_scalars() -> None:
 
 
 def test_to_hashable_raises_cache_key_error_for_unhashable() -> None:
-    class Unhashable:
+    class _Unhashable:
         __hash__ = None  # type: ignore[assignment]
 
     with pytest.raises(CacheKeyError, match='not hashable'):
-        _to_hashable(Unhashable())
+        _to_hashable(_Unhashable())
 
 
 def test_build_key_uses_model_value_as_part_of_key() -> None:
-    class Filter(BaseModel):
+    class _Filter(BaseModel):
         name: str
 
     cache = QueryCache()
-    key_a = cache.build_key(_handler, {'flt': Filter(name='a')})
-    key_b = cache.build_key(_handler, {'flt': Filter(name='b')})
-    key_a_again = cache.build_key(_handler, {'flt': Filter(name='a')})
+    key_a = cache.build_key(_handler, {'flt': _Filter(name='a')})
+    key_b = cache.build_key(_handler, {'flt': _Filter(name='b')})
+    key_a_again = cache.build_key(_handler, {'flt': _Filter(name='a')})
 
     assert key_a == key_a_again
     assert key_a != key_b
 
 
 def test_build_key_with_model_does_not_raise() -> None:
-    class Filter(BaseModel):
+    class _Filter(BaseModel):
         when: datetime
 
     cache = QueryCache()
-    key = cache.build_key(_handler, {'flt': Filter(when=datetime(2026, 1, 1))})
+    key = cache.build_key(_handler, {'flt': _Filter(when=datetime(2026, 1, 1))})
     assert hash(key)  # key is hashable end-to-end
