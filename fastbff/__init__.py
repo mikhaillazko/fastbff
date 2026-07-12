@@ -40,6 +40,9 @@ Exceptions
 - :class:`FastBFFError` and its subclasses — see :mod:`fastbff.exceptions`.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
+
 from .app import FastBFF
 from .exceptions import AsyncDispatchError
 from .exceptions import BatchContextMissingError
@@ -58,7 +61,13 @@ from .transformer.registry import transformer_metadata
 from .transformer.types import BatchArg
 from .transformer.types import TransformerAnnotation
 
+try:
+    __version__ = _version('fastbff')
+except PackageNotFoundError:  # pragma: no cover - source checkout without an install
+    __version__ = '0.0.0+unknown'
+
 __all__ = [
+    '__version__',
     # App / Router
     'FastBFF',
     'QueryRouter',

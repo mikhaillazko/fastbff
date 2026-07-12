@@ -1,6 +1,6 @@
 [project]
 name = "fastbff"
-version = "0.1.0"
+version = "0.2.0"
 description = "Simple back-end for front-end using Pydantic. Declarative data composition with typed transformers, dependency injection, and automatic N+1 avoidance."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -10,7 +10,7 @@ authors = [
 ]
 keywords = ["pydantic", "bff", "fastapi", "dependency-injection", "data-loader", "n+1"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
