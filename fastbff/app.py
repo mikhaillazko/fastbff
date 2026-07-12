@@ -9,8 +9,6 @@ hands the resolved values to the :class:`QueryExecutor`. A second override
 provides the :class:`SyncQueryExecutor` facade for sync endpoints.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from collections.abc import Mapping
 from types import MappingProxyType

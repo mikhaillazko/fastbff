@@ -14,8 +14,6 @@ no second DI traversal. A ``QueryExecutor``-typed parameter (with or without
 resolved by FastAPI.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from collections.abc import Iterable
 from dataclasses import dataclass

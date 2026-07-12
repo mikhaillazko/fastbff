@@ -20,8 +20,6 @@ model re-enters the pipeline as its own batch, so the one-bulk-fetch-per-field
 guarantee holds recursively.
 """
 
-from __future__ import annotations
-
 import asyncio
 import types as builtin_types
 from collections.abc import Callable
