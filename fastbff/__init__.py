@@ -39,7 +39,9 @@ Exceptions
 """
 
 from .app import FastBFF
+from .exceptions import AsyncDispatchError
 from .exceptions import BatchContextMissingError
+from .exceptions import CacheKeyError
 from .exceptions import FastBFFError
 from .exceptions import QueryNotRegisteredError
 from .exceptions import QueryRegistrationError
@@ -70,7 +72,9 @@ __all__ = [
     # Test helpers
     'transformer_metadata',
     # Exceptions
+    'AsyncDispatchError',
     'BatchContextMissingError',
+    'CacheKeyError',
     'FastBFFError',
     'QueryNotRegisteredError',
     'QueryRegistrationError',
