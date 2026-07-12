@@ -8,6 +8,7 @@ These are written as plain sync tests that drive the async surface with
 import asyncio
 from dataclasses import dataclass
 from typing import Annotated
+from typing import Any
 
 import anyio.to_thread
 import pytest
@@ -176,6 +177,21 @@ def test_afetch_async_transformer() -> None:
     results = asyncio.run(query_executor.afetch(FetchTeams()))
 
     assert [row.owner for row in results] == [_User(id=10), _User(id=20)]
+
+
+def test_call_handler_rejects_undetected_coroutine(query_executor) -> None:
+    """A callable that hides an ``async`` body from ``iscoroutinefunction`` (so it
+    runs down the sync branch but returns a coroutine) must fail loudly rather
+    than cache an unawaited coroutine — the corruption the bridge guards against."""
+
+    async def _inner() -> str:
+        return 'x'
+
+    def sneaky() -> Any:  # sync signature, returns a coroutine
+        return _inner()
+
+    with pytest.raises(AsyncDispatchError, match='coroutine'):
+        query_executor.call_handler(sneaky)
 
 
 def test_concurrent_afetch_is_cache_safe(app, query_executor) -> None:

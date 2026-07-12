@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Mapping
+from inspect import iscoroutine
 from inspect import iscoroutinefunction
 from typing import Any
 from typing import Self
@@ -104,7 +105,22 @@ class QueryExecutor:
         unchanged, distinguished by the ``bridged`` flag.
         """
         if not iscoroutinefunction(func):
-            return func(*args, **kwargs)
+            result = func(*args, **kwargs)
+            if iscoroutine(result):
+                # func slipped past iscoroutinefunction — e.g. an object with an
+                # ``async def __call__`` or an async callable behind a wrapper
+                # that doesn't preserve the coroutine code flags. Returning it
+                # would cache/return an unawaited coroutine, the exact silent
+                # corruption this bridge exists to prevent. Fail loudly instead.
+                result.close()
+                name = getattr(func, '__name__', repr(func))
+                raise AsyncDispatchError(
+                    f'{name!r} returned a coroutine but was not recognised as an async callable '
+                    'by inspect.iscoroutinefunction, so fastbff cannot bridge it. Declare it as a '
+                    'plain `async def` handler/transformer (not a wrapped or __call__-based async '
+                    'callable) so async dispatch can detect and await it.',
+                )
+            return result
 
         bridged = False
 
