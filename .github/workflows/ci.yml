@@ -57,3 +57,25 @@ jobs:
           flags: py${{ matrix.python-version }}
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  audit:
+    name: pip-audit (dependency vulnerabilities)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+
+      # Audit the exact locked dependency set (runtime + dev), so a known
+      # advisory in any pinned package fails CI. Add `--ignore-vuln <ID>` for
+      # accepted/unfixable findings.
+      - name: Export locked dependencies
+        run: uv export --frozen --no-emit-project --format requirements-txt -o requirements-audit.txt
+
+      - name: Audit dependencies for known vulnerabilities
+        run: uvx pip-audit --requirement requirements-audit.txt
