@@ -1,15 +1,17 @@
 """FastAPI-native DI integration for fastbff.
 
-At finalize time, fastbff walks every registered query/transformer handler,
-collects the union of their ``Annotated[..., Depends(...)]`` parameters, and
-synthesizes a ``provide_query_executor`` factory function whose
+At finalize time, fastbff walks every registered query handler and every
+discovered resolver, collects the union of their ``Annotated[..., Depends(...)]``
+parameters, and synthesizes a ``provide_query_executor`` factory function whose
 ``__signature__`` declares those deps as keyword-only parameters. FastAPI's
 ``get_dependant`` reads ``__signature__`` and resolves the entire graph once
 per request.
 
 The resolved values are handed to a :class:`QueryExecutor` that stores them in
-a per-handler lookup table. Handler / transformer dispatch becomes a dict
-lookup — no second DI traversal.
+a per-handler lookup table. Handler / resolver dispatch becomes a dict lookup —
+no second DI traversal. A ``QueryExecutor``-typed parameter (with or without
+``Depends``) is bound to the executor itself at dispatch time rather than
+resolved by FastAPI.
 """
 
 from __future__ import annotations
@@ -45,25 +47,34 @@ class DepSpec:
 HandlerDepIndex = dict[Callable, dict[str, Any]]
 
 
-def _iter_depends_params(func: Callable) -> Iterable[tuple[str, Any, DependsParam]]:
+def _iter_injectable_params(
+    func: Callable,
+    query_executor_type: type,
+) -> Iterable[tuple[str, str, Any, DependsParam | None]]:
+    """Yield ``(name, kind, annotation, depends)`` for injectable params of *func*.
+
+    ``kind`` is ``'executor'`` for a parameter typed as the project's
+    :class:`QueryExecutor` (bound to the executor at dispatch time, with or
+    without an accompanying ``Depends``) or ``'depends'`` for an
+    ``Annotated[T, Depends(...)]`` parameter. Every other parameter (the
+    ``Query[T]`` object, a resolver's ``ids``) is skipped.
+    """
     hints = cached_type_hints(func)
     for name, param in signature(func).parameters.items():
         annotation = hints.get(name, param.annotation)
-        if get_origin(annotation) is not Annotated:
-            continue
-        args = get_args(annotation)
-        for meta in args[1:]:
-            if isinstance(meta, DependsParam):
-                yield name, annotation, meta
-                break
-
-
-def _is_query_executor_dep(depends: DependsParam, annotation: Any, query_executor_type: type) -> bool:
-    dep = depends.dependency
-    if dep is query_executor_type:
-        return True
-    inner = get_args(annotation)[0] if get_origin(annotation) is Annotated else annotation
-    return inner is query_executor_type
+        inner = annotation
+        depends: DependsParam | None = None
+        if get_origin(annotation) is Annotated:
+            args = get_args(annotation)
+            inner = args[0]
+            for meta in args[1:]:
+                if isinstance(meta, DependsParam):
+                    depends = meta
+                    break
+        if inner is query_executor_type or (depends is not None and depends.dependency is query_executor_type):
+            yield name, 'executor', annotation, depends
+        elif depends is not None:
+            yield name, 'depends', annotation, depends
 
 
 def collect_dep_specs(
@@ -74,15 +85,15 @@ def collect_dep_specs(
     """Walk *handlers* and dedup their ``Depends`` params into a shared spec list.
 
     Params typed as the project's :class:`QueryExecutor` are excluded from the
-    synthesized signature (they're resolved from validation context at dispatch
-    time) — including them would produce a self-referential dep graph because
+    synthesized signature (they're bound to the executor at dispatch time) —
+    including them would produce a self-referential dep graph because
     ``QueryExecutor`` itself is bound to ``provide_query_executor`` via
     ``app.dependency_overrides``.
 
     Returns:
-        (specs, handler_index) where ``specs`` is the deduped list of
-        unique dependencies and ``handler_index[func][arg_name]`` maps each
-        handler param to either the synthetic name (string) or the
+        (specs, handler_index) where ``specs`` is the deduped list of unique
+        dependencies and ``handler_index[func][arg_name]`` maps each handler
+        param to either the synthetic name (string) or the
         :data:`QUERY_EXECUTOR_SENTINEL`.
     """
     specs: list[DepSpec] = []
@@ -91,10 +102,11 @@ def collect_dep_specs(
 
     for handler in handlers:
         per_handler: dict[str, Any] = {}
-        for arg_name, annotation, depends in _iter_depends_params(handler):
-            if _is_query_executor_dep(depends, annotation, query_executor_type):
+        for arg_name, kind, annotation, depends in _iter_injectable_params(handler, query_executor_type):
+            if kind == 'executor':
                 per_handler[arg_name] = QUERY_EXECUTOR_SENTINEL
                 continue
+            assert depends is not None
             key = (depends.dependency, depends.use_cache)
             synthetic = dedup.get(key)
             if synthetic is None:
@@ -151,3 +163,27 @@ def build_provide_query_executor(
     provide_query_executor.__annotations__ = {spec.synthetic_name: spec.annotation for spec in specs}
     provide_query_executor.__name__ = 'provide_query_executor'
     return provide_query_executor
+
+
+def build_provide_sync_query_executor(
+    *,
+    query_executor_type: type,
+    sync_factory: Callable[[Any], Any],
+) -> Callable:
+    """Build a ``provide_sync_query_executor`` that wraps the resolved executor.
+
+    Depends on the async :class:`QueryExecutor` (resolved through the same
+    mount-time override) and wraps it in a :class:`SyncQueryExecutor` via
+    *sync_factory* (in practice ``SyncQueryExecutor.create``).
+    """
+    inner_annotation = Annotated[query_executor_type, Depends(query_executor_type)]
+
+    def provide_sync_query_executor(inner: Any) -> Any:
+        return sync_factory(inner)
+
+    provide_sync_query_executor.__signature__ = Signature(  # type: ignore[attr-defined]
+        parameters=[Parameter(name='inner', kind=Parameter.KEYWORD_ONLY, annotation=inner_annotation)],
+    )
+    provide_sync_query_executor.__annotations__ = {'inner': inner_annotation}
+    provide_sync_query_executor.__name__ = 'provide_sync_query_executor'
+    return provide_sync_query_executor

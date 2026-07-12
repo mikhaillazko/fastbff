@@ -1,4 +1,4 @@
-import threading
+import asyncio
 from collections.abc import Awaitable
 from collections.abc import Callable
 from dataclasses import asdict
@@ -25,87 +25,77 @@ class QueryCache:
                      sets (e.g. ``{1,2,3}`` then ``{2,3,4}``) only fetch the
                      missing ids.
 
-    Thread-safe: under ``QueryExecutor.afetch`` several fetches can run on
-    worker threads concurrently (e.g. ``asyncio.gather``). Cache *mutations*
-    are guarded by a lock, but the ``fetcher`` callable runs **outside** the
-    lock — it may bridge a coroutine onto the event loop, and holding the lock
-    across that would risk a worker↔loop deadlock. Concurrent fetches of the
-    same key may therefore both run; the first result wins (``setdefault``),
-    which is consistent because handlers for a given query are idempotent.
+    The cache is **loop-native**: every method is a coroutine and all mutations
+    happen on the event loop between ``await`` points, so no thread lock is
+    needed. Concurrent identical fetches deduplicate — the call cache shares a
+    single in-flight :class:`asyncio.Future` per key, and the entity cache
+    serialises per bucket with an :class:`asyncio.Lock` — so a backend query is
+    never issued twice for the same key/bucket within a request.
     """
 
     def __init__(self) -> None:
         self._call_cache: dict[tuple, Any] = {}
+        self._call_inflight: dict[tuple, asyncio.Future] = {}
         self._entity_cache: dict[tuple, dict[Any, Any]] = {}
-        self._lock = threading.RLock()
+        self._entity_locks: dict[tuple, asyncio.Lock] = {}
 
     def build_key(self, func: Any, kwargs: dict[str, Any], *extra: Any) -> tuple:
         return (func, *extra, frozenset((k, _to_hashable(v)) for k, v in kwargs.items()))
 
-    def get_or_call(self, key: tuple, fetcher: Callable[[], Any]) -> Any:
-        with self._lock:
-            if key in self._call_cache:
-                return self._call_cache[key]
-        result = fetcher()
-        with self._lock:
-            return self._call_cache.setdefault(key, result)
+    async def get_or_call(self, key: tuple, fetcher: Callable[[], Awaitable[Any]]) -> Any:
+        """Return the cached result for *key*, awaiting *fetcher* only on a miss.
 
-    async def aget_or_call(self, key: tuple, fetcher: Callable[[], Awaitable[Any]]) -> Any:
-        """Async twin of :meth:`get_or_call` — the fetcher is awaited on the loop.
-
-        The lock is never held across the ``await`` (compute-outside-lock), so a
-        worker thread touching the cache concurrently cannot deadlock against the
-        loop, and the awaited fetcher can run further loop-native work.
+        Concurrent callers for the same key share one in-flight fetch: the first
+        creates a :class:`asyncio.Future`, later callers await it. The future is
+        resolved (or failed) once the fetch completes, so a backend call for a
+        given key happens at most once per request.
         """
-        with self._lock:
-            if key in self._call_cache:
-                return self._call_cache[key]
-        result = await fetcher()
-        with self._lock:
-            return self._call_cache.setdefault(key, result)
+        if key in self._call_cache:
+            return self._call_cache[key]
+        inflight = self._call_inflight.get(key)
+        if inflight is not None:
+            return await inflight
 
-    def get_or_fetch_entities(
-        self,
-        bucket_key: tuple,
-        ids: frozenset[Any],
-        fetcher: Callable[[frozenset[Any]], dict[Any, Any]],
-    ) -> dict[Any, Any]:
-        """Return a mapping for the requested ids, fetching only those not yet cached."""
-        with self._lock:
-            entity_map = self._entity_cache.setdefault(bucket_key, {})
-            missing = frozenset(ids - entity_map.keys())
-        if missing:
-            fetched = fetcher(missing)
-            with self._lock:
-                for key, value in fetched.items():
-                    entity_map.setdefault(key, value)
-                for id_ in missing:
-                    entity_map.setdefault(id_, MISSING)  # Mark as "checked but absent"
-        with self._lock:
-            return {id_: entity_map[id_] for id_ in ids if entity_map.get(id_, MISSING) is not MISSING}
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._call_inflight[key] = future
+        try:
+            result = await fetcher()
+        except BaseException as exc:
+            self._call_inflight.pop(key, None)
+            if not future.done():
+                future.set_exception(exc)
+            future.exception()  # mark retrieved — awaiters still re-raise via await
+            raise
+        else:
+            self._call_cache[key] = result
+            self._call_inflight.pop(key, None)
+            if not future.done():
+                future.set_result(result)
+            return result
 
-    async def aget_or_fetch_entities(
+    async def get_or_fetch_entities(
         self,
         bucket_key: tuple,
         ids: frozenset[Any],
         fetcher: Callable[[frozenset[Any]], Awaitable[dict[Any, Any]]],
     ) -> dict[Any, Any]:
-        """Async twin of :meth:`get_or_fetch_entities` — the fetcher is awaited.
+        """Return a mapping for the requested ids, fetching only those not yet cached.
 
-        Same compute-outside-lock discipline: the lock is only held for the
-        (synchronous) dict reads and merges, never across the awaited fetch.
+        Serialised per bucket with an :class:`asyncio.Lock` so two overlapping
+        requests never fetch the same missing id twice. Holding an asyncio lock
+        across the awaited fetch is safe — it is cooperative, not a thread lock.
         """
-        with self._lock:
+        lock = self._entity_locks.setdefault(bucket_key, asyncio.Lock())
+        async with lock:
             entity_map = self._entity_cache.setdefault(bucket_key, {})
             missing = frozenset(ids - entity_map.keys())
-        if missing:
-            fetched = await fetcher(missing)
-            with self._lock:
+            if missing:
+                fetched = await fetcher(missing)
                 for key, value in fetched.items():
                     entity_map.setdefault(key, value)
                 for id_ in missing:
                     entity_map.setdefault(id_, MISSING)  # Mark as "checked but absent"
-        with self._lock:
             return {id_: entity_map[id_] for id_ in ids if entity_map.get(id_, MISSING) is not MISSING}
 
 

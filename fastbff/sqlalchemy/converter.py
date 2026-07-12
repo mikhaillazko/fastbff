@@ -8,14 +8,14 @@ from sqlalchemy.orm import Session
 
 
 class SqlalchemyConverter:
-    """Execute a SQLAlchemy ``Select`` and project rows into shape for fastbff auto-wrap.
+    """Execute a SQLAlchemy ``Select`` and project rows into shape for the render pipeline.
 
     Replaces the ``[{'field': row.column, ...} for row in scalars]`` boilerplate
     inside ``@queries`` handlers. Column labels in the ``Select`` must match
-    field names on the target Pydantic model — fastbff's auto-wrap takes the
-    rows from here and validates them through ``Query[T].T`` at the dispatch
-    boundary, so the caller of ``query_executor.fetch(...)`` receives the
-    declared model type.
+    field names on the target Pydantic model — fastbff's render pipeline takes
+    the rows from here and validates them through ``Query[T].T`` at the dispatch
+    boundary (resolving any ``Resolve`` fields along the way), so the caller of
+    ``query_executor.fetch(...)`` receives the declared model type.
 
     Per-request: bind via FastAPI ``Depends`` against your session factory::
 
@@ -30,8 +30,8 @@ class SqlalchemyConverter:
             return converter.execute_all(statement, list[TeamDTO])
 
     The declared return type (``list[TeamDTO]``) describes what the handler's
-    caller sees *after* fastbff's auto-wrap; the converter returns rows under
-    the hood and the framework validates them.
+    caller sees *after* fastbff's render pipeline; the converter returns rows
+    under the hood and the framework validates them.
     """
 
     def __init__(self, session: Session) -> None:

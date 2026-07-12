@@ -12,6 +12,9 @@ class QueryExecutorMock(QueryExecutor):
 
     Build one with :meth:`QueryExecutor.create`, e.g.
     ``QueryExecutorMock.create(query_annotations=app.query_annotations)``.
+    Stubs are honoured by both direct ``await mock.fetch(...)`` calls and by
+    the render pipeline (a ``Resolve(FetchUsers)`` field fetches through the
+    same override), so a stubbed :class:`EntityQuery` short-circuits its handler.
     """
 
     def __init__(self) -> None:
@@ -21,20 +24,11 @@ class QueryExecutorMock(QueryExecutor):
     def stub_query[T](self, query_type: type[Query[T]], return_value: T) -> None:
         self._query_stubs[query_type] = return_value
 
-    def fetch[T](self, query_obj: Query[T]) -> T:
+    async def fetch[T](self, query_obj: Query[T]) -> T:
         result = self._query_stubs.get(type(query_obj), MISSING)
         if result is not MISSING:
             return cast(T, result)
-        return super().fetch(query_obj)
-
-    async def afetch[T](self, query_obj: Query[T]) -> T:
-        # Honour stubs on the async path too — the base ``afetch`` dispatches an
-        # async handler to ``_afetch_async`` (bypassing ``fetch``), so the stub
-        # check must live here rather than relying on the ``fetch`` override.
-        result = self._query_stubs.get(type(query_obj), MISSING)
-        if result is not MISSING:
-            return cast(T, result)
-        return await super().afetch(query_obj)
+        return await super().fetch(query_obj)
 
     def reset_mock(self) -> None:
         self._query_stubs.clear()

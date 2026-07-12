@@ -1,7 +1,6 @@
 from collections.abc import Callable
-from collections.abc import Iterable
 from collections.abc import Mapping
-from inspect import iscoroutine
+from functools import partial
 from inspect import iscoroutinefunction
 from typing import Any
 from typing import Self
@@ -9,8 +8,8 @@ from typing import Self
 import anyio.from_thread
 import anyio.to_thread
 
-from fastbff.exceptions import AsyncDispatchError
 from fastbff.exceptions import QueryNotRegisteredError
+from fastbff.exceptions import ResolveRegistrationError
 
 from .query import Query
 from .query_annotation import QueryAnnotation
@@ -18,28 +17,30 @@ from .query_cache import QueryCache
 
 
 class QueryExecutor:
-    """Per-request executor.
+    """Per-request, **async-native** dispatcher.
 
-    :meth:`fetch` dispatches typed query objects with automatic caching:
+    :meth:`fetch` is a coroutine. It dispatches typed query objects with
+    automatic caching:
 
-    - Call-level for plain return types.
-    - Entity-level for ``dict[K, V]`` queries with an IDs field:
-      overlapping id sets share cached entries, only missing ids are
-      fetched from the underlying query.
+    - Call-level for plain ``Query[T]`` return types.
+    - Entity-level for :class:`EntityQuery` — overlapping id sets share cached
+      entries, only missing ids are fetched.
 
-    The executor also carries the resolved dependency map for every
-    registered handler (queries + transformers). Dependencies are resolved
-    once per request by FastAPI's ``solve_dependencies`` when the endpoint
-    asks for the executor via ``Depends(provide_query_executor)``; dispatch
-    is a dict lookup.
+    Async handlers run **directly on the event loop**; sync handlers are
+    offloaded to an anyio worker thread (:meth:`_call`), so a request-scoped
+    resource is touched off-loop only while the sync handler runs. When a
+    query's result model declares :class:`~fastbff.resolve.Resolve` fields,
+    :meth:`fetch` runs the render pipeline (plan → concurrent fetch → merge).
 
-    ``__init__`` is intentionally parameterless: an endpoint declares
-    ``Annotated[QueryExecutor, Depends(QueryExecutor)]``, so FastAPI
-    introspects ``inspect.signature(QueryExecutor)`` at startup. A
-    parameterless constructor presents an empty signature naturally — no
-    ``__init__`` params leak in as request fields, and at request time the
-    ``QueryExecutor → provide_query_executor`` override supplies the real
-    instance. Build a populated executor with :meth:`create`.
+    The executor also carries the resolved dependency map for every registered
+    handler / resolver. Dependencies are resolved once per request by FastAPI
+    and handed to :meth:`create`; dispatch is a dict lookup.
+
+    ``__init__`` is intentionally parameterless so an endpoint can declare
+    ``Annotated[QueryExecutor, Depends(QueryExecutor)]`` and FastAPI sees an
+    empty signature; the mount-time override supplies the real instance. Build a
+    populated executor with :meth:`create`. Sync endpoints inject
+    :class:`SyncQueryExecutor` instead.
     """
 
     def __init__(self) -> None:
@@ -59,8 +60,8 @@ class QueryExecutor:
         """Build a populated executor.
 
         This is the canonical constructor for both ``provide_query_executor``
-        and tests. ``__init__`` stays parameterless so the class keeps an
-        empty FastAPI-facing signature (see the class docstring).
+        and tests. ``__init__`` stays parameterless so the class keeps an empty
+        FastAPI-facing signature (see the class docstring).
         """
         executor = cls()
         executor._query_annotations = query_annotations
@@ -69,7 +70,7 @@ class QueryExecutor:
         return executor
 
     def deps_for(self, func: Callable) -> dict[str, Any]:
-        """Return the resolved kwargs map for *func* (handler or transformer).
+        """Return the resolved kwargs map for *func* (handler or resolver).
 
         Any ``QueryExecutor``-typed parameter receives ``self``; other entries
         are looked up in the shared resolved-deps map produced by FastAPI.
@@ -87,193 +88,119 @@ class QueryExecutor:
                 out[arg_name] = self._resolved_deps[slot]
         return out
 
-    def call_handler(self, func: Callable, /, *args: Any, **kwargs: Any) -> Any:
-        """Invoke a handler or transformer, bridging ``async def`` callables to the loop.
+    async def _call(self, func: Callable, /, *args: Any, **kwargs: Any) -> Any:
+        """Invoke a handler / resolver, bridging on the correct thread.
 
-        Sync callables run inline. For an ``async def`` callable we submit its
-        coroutine to the host event loop with :func:`anyio.from_thread.run`,
-        which blocks the *current worker thread* — never the loop — until it
-        resolves. This is the same primitive Starlette uses, so it works inside
-        both a sync FastAPI endpoint (which Starlette already runs in a worker
-        thread) and :meth:`afetch`, and on asyncio or trio backends alike.
-
-        Raises :class:`AsyncDispatchError` when there is no worker-thread portal
-        to bridge through: a purely synchronous ``fetch`` reached an async
-        handler, or an async handler called sync ``fetch`` from the loop thread
-        (which would self-deadlock — use ``await afetch`` there instead). A
-        ``RuntimeError`` raised by the coroutine *itself* is left to propagate
-        unchanged, distinguished by the ``bridged`` flag.
+        Async callables are awaited directly on the loop (no worker thread, so
+        async composition never exhausts the pool). Sync callables are offloaded
+        to a single anyio worker thread via :func:`anyio.to_thread.run_sync`,
+        preserving thread affinity for whatever request-scoped resource they
+        touch.
         """
-        if not iscoroutinefunction(func):
-            result = func(*args, **kwargs)
-            if iscoroutine(result):
-                # func slipped past iscoroutinefunction — e.g. an object with an
-                # ``async def __call__`` or an async callable behind a wrapper
-                # that doesn't preserve the coroutine code flags. Returning it
-                # would cache/return an unawaited coroutine, the exact silent
-                # corruption this bridge exists to prevent. Fail loudly instead.
-                result.close()
-                name = getattr(func, '__name__', repr(func))
-                raise AsyncDispatchError(
-                    f'{name!r} returned a coroutine but was not recognised as an async callable '
-                    'by inspect.iscoroutinefunction, so fastbff cannot bridge it. Declare it as a '
-                    'plain `async def` handler/transformer (not a wrapped or __call__-based async '
-                    'callable) so async dispatch can detect and await it.',
-                )
-            return result
-
-        bridged = False
-
-        async def run_on_loop() -> Any:
-            nonlocal bridged
-            bridged = True
+        if iscoroutinefunction(func):
             return await func(*args, **kwargs)
+        return await anyio.to_thread.run_sync(partial(func, *args, **kwargs))
 
-        try:
-            return anyio.from_thread.run(run_on_loop)
-        except RuntimeError as error:
-            if bridged:
-                raise  # the coroutine itself raised — not a bridging failure
-            name = getattr(func, '__name__', repr(func))
-            raise AsyncDispatchError(
-                f'async {name!r} was reached on a path that cannot await it. Call it through '
-                'a sync FastAPI endpoint (Starlette runs sync endpoints in a worker thread, '
-                'where fastbff bridges the coroutine onto the loop) or via '
-                '`await query_executor.afetch(...)` from an async endpoint. Inside an async '
-                'handler, use `await query_executor.afetch(...)` for further fetches rather '
-                'than sync `fetch`.',
-            ) from error
-
-    async def afetch[T](self, query_obj: Query[T]) -> T:
-        """Async entry point for :meth:`fetch` that supports ``async def`` handlers.
-
-        Dispatches on the target handler's kind so async composition never
-        exhausts the worker-thread pool:
-
-        - **Async handler** — the handler, and any nested ``afetch`` of other
-          async handlers, is awaited **directly on the loop**, consuming no
-          worker thread. Only the synchronous transformer-validate step (Pydantic
-          validators that cannot ``await`` in place) is offloaded to a single
-          worker thread, which bridges its own async sub-fetches back to the loop.
-        - **Sync handler** — the whole synchronous fetch subtree runs on one
-          worker thread via :func:`anyio.to_thread.run_sync`, exactly as
-          :meth:`fetch` does. Confining it to one thread preserves thread affinity
-          for request-scoped resources (e.g. a DB session shared across handlers),
-          and sync composition never nests worker threads.
-
-        Use this from ``async def`` FastAPI endpoints. A **sync** endpoint does
-        not need it — Starlette already runs sync endpoints in a worker thread,
-        so it can call :meth:`fetch` directly and async handlers still bridge.
-        """
-        annotation = self._query_annotations.get(type(query_obj))
-        if annotation is None:
-            raise QueryNotRegisteredError(f'No @query registered for query object {type(query_obj)}')
-        if iscoroutinefunction(annotation.original_func):
-            return await self._afetch_async(query_obj, annotation)
-        return await anyio.to_thread.run_sync(self.fetch, query_obj)
-
-    async def _afetch_async[T](self, query_obj: Query[T], annotation: QueryAnnotation) -> T:
-        """Loop-native fetch for an ``async def`` handler (see :meth:`afetch`).
-
-        Mirrors :meth:`fetch` but awaits the async handler on the loop and uses
-        the async cache twins, so caching and the single-bulk-fetch contract
-        still hold. Only transformer-driven validation is offloaded to one worker
-        thread via :func:`apply_auto_wrap`, where sync transformers bridge their
-        own async sub-fetches back to the loop.
-        """
-        from fastbff.batch import apply_auto_wrap
-
-        handler = annotation.original_func
-        extra_kwargs = self.deps_for(handler)
-        query_param_name = annotation.query_param_name
-        query_kwargs = {query_param_name: query_obj} if query_param_name is not None else {}
-
-        if annotation.dict_type_key is not None and query_param_name is not None:
-            ids_field = annotation.ids_param_name
-            if ids_field is not None:
-                ids_value = getattr(query_obj, ids_field, None)
-                if isinstance(ids_value, Iterable) and not isinstance(ids_value, (str, bytes)):
-                    ids = frozenset(ids_value)
-                    discriminators = {name: value for name, value in dict(query_obj).items() if name != ids_field}
-                    bucket_key = self._cache.build_key(handler, discriminators, annotation.dict_value_type)
-
-                    async def entity_fetcher(missing: frozenset[Any]) -> dict[Any, Any]:
-                        return await handler(
-                            **{query_param_name: query_obj.model_copy(update={ids_field: missing})},
-                            **extra_kwargs,
-                        )
-
-                    result = await self._cache.aget_or_fetch_entities(bucket_key, ids, entity_fetcher)
-                    return result  # type: ignore[return-value]
-
-        cache_key = self._cache.build_key(
-            handler,
-            dict(query_obj),
-            annotation.dict_value_type if annotation.dict_type_key is not None else None,
-        )
-        wrap_info = annotation.auto_wrap
-
-        async def call_fetcher() -> Any:
-            result = await handler(**query_kwargs, **extra_kwargs)
-            if wrap_info is not None:
-                # Transformers are synchronous Pydantic validators — run the
-                # validate step on one worker thread so they can bridge their own
-                # async sub-fetches back onto the loop via ``call_handler``.
-                return await anyio.to_thread.run_sync(apply_auto_wrap, result, wrap_info, self)
-            return result
-
-        return await self._cache.aget_or_call(cache_key, call_fetcher)
-
-    def fetch[T](self, query_obj: Query[T]) -> T:
-        # Late import — fastbff.batch depends on QueryExecutor; importing it
-        # at module top would create a cycle.
-        from fastbff.batch import apply_auto_wrap
-
+    async def fetch[T](self, query_obj: Query[T]) -> T:
         query_type = type(query_obj)
         annotation = self._query_annotations.get(query_type)
         if annotation is None:
-            raise QueryNotRegisteredError(f'No @query registered for query object {query_type}')
+            raise QueryNotRegisteredError(f'No @queries registered for query object {query_type}')
 
         handler = annotation.original_func
         extra_kwargs = self.deps_for(handler)
         query_param_name = annotation.query_param_name
         query_kwargs = {query_param_name: query_obj} if query_param_name is not None else {}
 
-        if annotation.dict_type_key is not None and query_param_name is not None:
-            ids_field = annotation.ids_param_name
-            if ids_field is not None:
-                ids_value = getattr(query_obj, ids_field, None)
-                if isinstance(ids_value, Iterable) and not isinstance(ids_value, (str, bytes)):
-                    ids = frozenset(ids_value)
-                    # The entity bucket must be keyed by everything on the query
-                    # *except* the ids field — otherwise two queries that differ
-                    # only in a discriminating field (e.g. ``tenant_id``) but share
-                    # ids would collide in one bucket and cross-serve entries.
-                    discriminators = {name: value for name, value in dict(query_obj).items() if name != ids_field}
-                    bucket_key = self._cache.build_key(handler, discriminators, annotation.dict_value_type)
-                    result = self._cache.get_or_fetch_entities(
-                        bucket_key,
-                        ids,
-                        lambda missing: self.call_handler(
-                            handler,
-                            **{query_param_name: query_obj.model_copy(update={ids_field: missing})},
-                            **extra_kwargs,
-                        ),
-                    )
-                    return result  # type: ignore[return-value]
+        if annotation.is_entity:
+            ids_field = annotation.ids_field
+            # Both guaranteed non-None by QueryAnnotation for entity queries.
+            assert ids_field is not None
+            assert query_param_name is not None
+            param_name = query_param_name
+            ids = frozenset(getattr(query_obj, ids_field))
+            # The entity bucket must be keyed by everything on the query *except*
+            # the ids field — otherwise two queries that differ only in a
+            # discriminating field (e.g. ``tenant_id``) but share ids would
+            # collide in one bucket and cross-serve entries.
+            discriminators = {name: value for name, value in dict(query_obj).items() if name != ids_field}
+            bucket_key = self._cache.build_key(handler, discriminators, annotation.entity_value_type)
 
-        cache_key = self._cache.build_key(
-            handler,
-            dict(query_obj),
-            annotation.dict_value_type if annotation.dict_type_key is not None else None,
-        )
+            async def entity_fetcher(missing: frozenset[Any]) -> dict[Any, Any]:
+                return await self._call(
+                    handler,
+                    **{param_name: query_obj.model_copy(update={ids_field: missing})},
+                    **extra_kwargs,
+                )
 
-        wrap_info = annotation.auto_wrap
+            result = await self._cache.get_or_fetch_entities(bucket_key, ids, entity_fetcher)
+            return result  # type: ignore[return-value]
 
-        def fetcher() -> Any:
-            result = self.call_handler(handler, **query_kwargs, **extra_kwargs)
-            if wrap_info is not None:
-                return apply_auto_wrap(result, wrap_info, self)
+        cache_key = self._cache.build_key(handler, dict(query_obj))
+        render_info = annotation.render_target
+
+        async def call_fetcher() -> Any:
+            result = await self._call(handler, **query_kwargs, **extra_kwargs)
+            if render_info is not None:
+                from fastbff.resolve import apply_render
+
+                return await apply_render(result, render_info, self)
             return result
 
-        return self._cache.get_or_call(cache_key, fetcher)
+        return await self._cache.get_or_call(cache_key, call_fetcher)
+
+    async def resolve_ids(self, resolve: Any, ids: frozenset[Any]) -> dict[Any, Any]:
+        """Fetch the ``dict[key, value]`` backing a :class:`~fastbff.resolve.Resolve` field.
+
+        Called by the render pipeline in phase 2. For the resolver form, invoke
+        the resolver with the id-set plus its injected deps; for the query form,
+        construct and fetch the target :class:`EntityQuery`.
+        """
+        if resolve.resolver is not None:
+            deps = self.deps_for(resolve.resolver)
+            return await self._call(resolve.resolver, ids, **deps)
+
+        query_type = resolve.query_type
+        annotation = self._query_annotations.get(query_type)
+        if annotation is None or not annotation.is_entity or annotation.ids_field is None:
+            name = getattr(query_type, '__name__', query_type)
+            raise ResolveRegistrationError(
+                f'Resolve({name}) targets a query that is not a registered EntityQuery. '
+                'A Resolve(QueryType) field must point at an EntityQuery so its ids field '
+                'can be populated with the collected keys.',
+            )
+        query = query_type(**{annotation.ids_field: ids})
+        return await self.fetch(query)
+
+
+class SyncQueryExecutor:
+    """Sync facade over an async :class:`QueryExecutor` for **sync** endpoints.
+
+    A sync FastAPI endpoint runs in a Starlette worker thread; :meth:`fetch`
+    bridges the async executor onto the event loop via
+    :func:`anyio.from_thread.run`. From there async handlers run loop-native and
+    sync handlers are offloaded to worker threads, exactly as for an async
+    endpoint. The cost is one loop round-trip per top-level ``fetch``.
+
+    ``__init__`` is parameterless so ``Depends(SyncQueryExecutor)`` presents an
+    empty FastAPI-facing signature; the mount-time override supplies the bound
+    instance. Build one with :meth:`create`.
+    """
+
+    def __init__(self) -> None:
+        self._inner: QueryExecutor | None = None
+
+    @classmethod
+    def create(cls, inner: QueryExecutor) -> Self:
+        facade = cls()
+        facade._inner = inner
+        return facade
+
+    def fetch[T](self, query_obj: Query[T]) -> T:
+        if self._inner is None:
+            raise RuntimeError(
+                'SyncQueryExecutor is not bound to a QueryExecutor. Inject it with '
+                'Annotated[SyncQueryExecutor, Depends(SyncQueryExecutor)] on a mounted app, '
+                'or build one with SyncQueryExecutor.create(executor).',
+            )
+        return anyio.from_thread.run(self._inner.fetch, query_obj)
