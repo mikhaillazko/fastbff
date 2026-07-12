@@ -21,11 +21,18 @@ rides FastAPI's own concurrency model — one thread pool, asyncio or trio):
 - A **sync** endpoint needs no extra code — Starlette runs it in an anyio
   worker thread, so `query_executor.fetch(...)` bridges async handlers as-is.
 - An **async** endpoint uses `await query_executor.afetch(query)`, which
-  offloads `fetch` via `anyio.to_thread.run_sync`.
+  dispatches on the handler's kind: an **async** handler (and any nested
+  `afetch` it awaits) runs **directly on the loop** — no worker thread, so
+  async composition can't exhaust the bounded pool; a **sync** handler's whole
+  subtree runs on one worker thread via `anyio.to_thread.run_sync`, preserving
+  thread affinity for request-scoped resources. Only the sync transformer-
+  validate step is offloaded to a single thread that bridges its own async
+  sub-fetches.
 - `QueryExecutor.call_handler` bridges any `async def` handler/transformer
-  reached during a fetch onto the loop via `anyio.from_thread.run(...)` (blocks
-  the worker thread, never the loop). `QueryCache` is lock-guarded for
-  concurrent `afetch` (e.g. `asyncio.gather`).
+  reached during a *sync* fetch onto the loop via `anyio.from_thread.run(...)`
+  (blocks the worker thread, never the loop), and guards against an async
+  callable that slips past `iscoroutinefunction`. `QueryCache` is lock-guarded
+  (with async twins for the loop-native path) for concurrent `afetch`.
 
 Misuse raises a clear `AsyncDispatchError` (a coroutine's own `RuntimeError` is
 distinguished and propagated): a purely sync `fetch` reaching an async handler,
@@ -34,8 +41,9 @@ or an async handler calling sync `fetch` from the loop thread (use
 
 Covered by `fastbff/query_executor/async_dispatch_test.py` (incl. the
 async-handler-through-a-sync-transformer N+1 case, the sync-endpoint
-worker-thread bridge, and a concurrent-`afetch` cache-safety smoke) and the
-`/teams-async` route in `integration_tests/`.
+worker-thread bridge via `TestClient`, the async-composition-under-a-
+one-token-pool deadlock regression, and a concurrent-`afetch` cache-safety
+smoke) and the `/teams-async` route in `integration_tests/`.
 
 **Possible follow-up**: greater inter-query concurrency in the transformer
 path (today each transformer's bulk fetch bridges one at a time).
