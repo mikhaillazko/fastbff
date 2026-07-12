@@ -44,6 +44,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=7.0",
+    "pytest-cov>=5.0",
     "ruff>=0.5",
     "ty>=0.0.1a5",
     "pre-commit>=3.7",
@@ -70,6 +71,22 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["fastbff", "."]
 python_files = ["*_test.py"]
+
+[tool.coverage.run]
+source = ["fastbff"]
+branch = true
+omit = ["**/*_test.py", "conftest.py"]
+
+[tool.coverage.report]
+show_missing = true
+# Floor set just below the current level; ratchet up as coverage improves.
+fail_under = 85
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
 
 [tool.ruff]
 line-length = 120

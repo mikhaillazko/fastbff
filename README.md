@@ -1,5 +1,11 @@
 # fastbff
 
+[![CI](https://github.com/mikhaillazko/fastbff/actions/workflows/ci.yml/badge.svg)](https://github.com/mikhaillazko/fastbff/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/mikhaillazko/fastbff/graph/badge.svg)](https://codecov.io/gh/mikhaillazko/fastbff)
+[![PyPI](https://img.shields.io/pypi/v/fastbff.svg)](https://pypi.org/project/fastbff/)
+[![Python versions](https://img.shields.io/pypi/pyversions/fastbff.svg)](https://pypi.org/project/fastbff/)
+[![License: MIT](https://img.shields.io/pypi/l/fastbff.svg)](https://github.com/mikhaillazko/fastbff/blob/master/LICENSE)
+
 Simple back-end for front-end using Pydantic. Declarative data composition with typed
 transformers, dependency injection, and automatic N+1 avoidance. Suitable for modular
 monolithic systems.
