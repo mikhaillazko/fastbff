@@ -1,6 +1,6 @@
 [project]
 name = "fastbff"
-version = "0.2.0"
+version = "0.3.0"
 description = "Simple back-end for front-end using Pydantic. Declarative data composition with typed transformers, dependency injection, and automatic N+1 avoidance."
 readme = "README.md"
 requires-python = ">=3.12"

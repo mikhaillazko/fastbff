@@ -1,9 +1,8 @@
 """Sample FastBFF app wired for the FastAPI + SQLAlchemy integration tests.
 
 Assembles the full stack — SQLAlchemy ORM models, Pydantic DTOs, query
-and transformer registrations on a :class:`QueryRouter`, and a single
-FastAPI route — as module-level singletons. Tests import
-:data:`fastapi_app` and drive it through ``TestClient``.
+registrations on a :class:`QueryRouter`, and FastAPI routes — as module-level
+singletons. Tests import :data:`fastapi_app` and drive it through ``TestClient``.
 """
 
 from collections.abc import Iterator
@@ -21,12 +20,13 @@ from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from fastbff import BatchArg
+from fastbff import EntityQuery
 from fastbff import FastBFF
 from fastbff import Query
 from fastbff import QueryExecutor
 from fastbff import QueryRouter
-from fastbff import build_transform_annotated
+from fastbff import Resolve
+from fastbff import SyncQueryExecutor
 from fastbff.sqlalchemy import SqlalchemyConverter
 
 # --- Persistence --------------------------------------------------------------
@@ -85,44 +85,29 @@ class UserDTO(BaseModel):
     name: str
 
 
-# --- Transformers -------------------------------------------------------------
-# Declared ahead of the query it fans into so the file reads top-down. The
-# reference to ``FetchUsers`` inside the body is resolved at call time, not at
-# decoration time, so the forward use is safe.
+# --- Queries ------------------------------------------------------------------
+# ``FetchUsers`` is an EntityQuery: overlapping id sets share cached entries and
+# only missing ids are fetched. ``TeamDTO.owner`` declares ``Resolve(FetchUsers)``
+# so the raw ``owner_id`` on each row is resolved to a ``UserDTO`` by the render
+# pipeline — a single bulk SELECT for the whole page.
 
 
 query_router = QueryRouter()
 
 
-@query_router.transformer
-def transform_owner_id_to_user(
-    owner_id: int,
-    batch: BatchArg[int],
-    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
-) -> UserDTO | None:
-    users_map = query_executor.fetch(FetchUsers(ids=batch.ids))
-    return users_map.get(owner_id)
-
-
-UserTransformerAnnotated = build_transform_annotated(transform_owner_id_to_user)
-
-
-# --- Queries ------------------------------------------------------------------
-
-
-class FetchUsers(Query[dict[int, UserDTO]]):
+class FetchUsers(EntityQuery[int, UserDTO]):
     ids: frozenset[int]
 
 
 @query_router.queries
-def fetch_users(args: FetchUsers, session: DBSession) -> dict[int, UserDTO]:
-    rows = session.execute(select(UserRow).where(UserRow.id.in_(args.ids))).scalars().all()
+def fetch_users(query: FetchUsers, session: DBSession) -> dict[int, UserDTO]:
+    rows = session.execute(select(UserRow).where(UserRow.id.in_(query.ids))).scalars().all()
     return {row.id: UserDTO(id=row.id, name=row.name) for row in rows}
 
 
 class TeamDTO(BaseModel):
     id: int
-    owner: UserTransformerAnnotated
+    owner: Annotated[UserDTO | None, Resolve(FetchUsers)]
 
 
 class FetchTeams(Query[list[TeamDTO]]):
@@ -136,9 +121,9 @@ def fetch_teams(sqlalchemy_converter: SqlalchemyConverterDep) -> list[TeamDTO]:
 
 
 # --- HTTP + mount -------------------------------------------------------------
-# ``FastBFF.mount`` installs the synthesised ``QueryExecutor`` factory into
-# ``fastapi_app.dependency_overrides`` so routes pull a per-request executor
-# through plain ``Depends(QueryExecutor)``.
+# ``FastBFF.mount`` installs the synthesised ``QueryExecutor`` and
+# ``SyncQueryExecutor`` factories into ``fastapi_app.dependency_overrides`` so
+# routes pull a per-request executor through plain ``Depends(...)``.
 
 
 fastapi_app = FastAPI()
@@ -146,19 +131,20 @@ fastapi_app = FastAPI()
 
 @fastapi_app.get('/teams')
 def list_teams(
-    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+    sync_query_executor: Annotated[SyncQueryExecutor, Depends(SyncQueryExecutor)],
 ) -> list[TeamDTO]:
-    return query_executor.fetch(FetchTeams())
+    # Sync endpoint: Starlette runs it in a worker thread; SyncQueryExecutor
+    # bridges the async executor onto the loop. One bulk SELECT for owners.
+    return sync_query_executor.fetch(FetchTeams())
 
 
 @fastapi_app.get('/teams-async')
 async def list_teams_async(
     query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
 ) -> list[TeamDTO]:
-    # Async endpoint: ``afetch`` offloads the sync fetch machinery to a worker
-    # thread and bridges async handlers back to the loop. Same payload and same
+    # Async endpoint: the executor runs loop-native. Same payload and same
     # single-bulk-SELECT N+1 contract as the sync ``/teams`` route.
-    return await query_executor.afetch(FetchTeams())
+    return await query_executor.fetch(FetchTeams())
 
 
 fastbff_app = FastBFF()

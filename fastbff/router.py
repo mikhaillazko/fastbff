@@ -1,60 +1,53 @@
-"""Carrier for pending query / transformer registrations.
+"""Carrier for pending query registrations.
 
-A :class:`QueryRouter` gathers functions with their type metadata. When the
-router is merged into a :class:`FastBFF` app via :meth:`FastBFF.include_router`,
-its registrations become part of the union of handlers scanned by
-:meth:`FastBFF.finalize` to synthesize the ``provide_query_executor`` factory.
+A :class:`QueryRouter` gathers query handlers with their type metadata. When
+the router is merged into a :class:`FastBFF` app via
+:meth:`FastBFF.include_router`, its registrations join the union of handlers
+scanned by :meth:`FastBFF.finalize` to synthesize the ``provide_query_executor``
+factory.
+
+Resolvers are not registered here — they are discovered from the ``Resolve``
+fields of the response models a query returns, so a resolver's ``Depends(...)``
+params are collected without a second decorator.
 """
 
 from collections.abc import Callable
 
 from .exceptions import QueryRegistrationError
-from .exceptions import TransformerRegistrationError
 from .query_executor.query import Query
 from .query_executor.query_annotation import QueryAnnotation
 from .query_executor.query_annotation import _is_query_subclass
-from .transformer.types import _TRANSFORMER_ANNOTATION_ATTR
-from .transformer.types import TransformerAnnotation
 
 
 class QueryRouter:
-    """A bundle of query and transformer registrations not yet attached to an app.
+    """A bundle of query registrations not yet attached to an app.
 
-    Use ``@router.queries`` and ``@router.transformer`` exactly like the
-    decorators on a :class:`FastBFF` app. Pass the router to
-    :meth:`FastBFF.include_router` to merge its registrations into the app::
+    Use ``@router.queries`` exactly like the decorator on a :class:`FastBFF`
+    app. Pass the router to :meth:`FastBFF.include_router` to merge its
+    registrations into the app::
 
         router = QueryRouter()
 
         @router.queries
-        def fetch_users(args: FetchUsers) -> dict[int, User]: ...
-
-        @router.transformer
-        def transform_owner(
-            owner_id: int,
-            batch: BatchArg[int],
-            query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
-        ) -> User | None: ...
+        def fetch_users(query: FetchUsers, session: DBSession) -> dict[int, UserDTO]: ...
 
         app = FastBFF()
         app.include_router(router)
-
     """
 
     def __init__(self) -> None:
         self._query_func_annotations_registry: dict[Callable, QueryAnnotation] = {}
-        self._transformer_func_annotation_registry: dict[Callable, TransformerAnnotation] = {}
 
     def queries[F: Callable](self, func_or_query_type: F | type[Query]) -> F | Callable[[F], F]:
-        """Register *func* as a ``@query`` handler on this router.
+        """Register *func* as a ``@queries`` handler on this router.
 
         Supports two forms::
 
             @router.queries
-            def fetch_users(args: FetchUsers) -> dict[int, User]: ...
+            def fetch_users(query: FetchUsers) -> dict[int, UserDTO]: ...
 
             @router.queries(FetchAllUsers)
-            def fetch_all_users() -> list[User]: ...
+            def fetch_all_users() -> list[UserDTO]: ...
 
         The second form binds *func* to an explicit ``Query`` subclass for
         parameterless handlers whose query type cannot be inferred from the
@@ -77,21 +70,4 @@ class QueryRouter:
             )
         annotation = QueryAnnotation(original_func=func, explicit_query_type=explicit_query_type)
         self._query_func_annotations_registry[func] = annotation
-        return func
-
-    def transformer[F: Callable](self, func: F) -> F:
-        """Register *func* as a ``@transformer`` handler on this router.
-
-        Re-registering the same function raises
-        :class:`TransformerRegistrationError` — same rule as ``@queries`` so
-        copy-paste duplicates surface at composition time, not as a silently
-        replaced transformer.
-        """
-        if func in self._transformer_func_annotation_registry:
-            raise TransformerRegistrationError(
-                f'Duplicate @transformer registration for function {func.__name__!r}.',
-            )
-        transformer_annotation = TransformerAnnotation(original_func=func)
-        setattr(func, _TRANSFORMER_ANNOTATION_ATTR, transformer_annotation)
-        self._transformer_func_annotation_registry[func] = transformer_annotation
         return func

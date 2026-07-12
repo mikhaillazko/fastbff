@@ -3,7 +3,7 @@
 Spins up an in-memory SQLite to exercise the SQL → row mapping path
 without involving the rest of fastbff. The integration test under
 ``integration_tests/`` covers the converter wired through a real
-``@queries`` handler + auto-wrap.
+``@queries`` handler + ``Resolve`` field composition.
 """
 
 from typing import Any

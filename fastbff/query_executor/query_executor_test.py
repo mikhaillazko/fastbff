@@ -1,8 +1,10 @@
-"""Tests for ``QueryExecutor.fetch`` / ``afetch`` — call-level and entity-level
-caching, plus ``async def`` handler/transformer dispatch.
+"""Tests for ``QueryExecutor.fetch`` — call-level and entity-level caching,
+async/sync handler dispatch, the render pipeline, and the ``SyncQueryExecutor``
+facade.
 
-The async tests are written as plain sync tests that drive the async surface
-with ``asyncio.run`` so no pytest-asyncio plugin is required.
+``fetch`` is a coroutine, so each scenario drives it with ``asyncio.run`` — no
+pytest-asyncio plugin required. Sync handlers are offloaded to a worker thread
+inside ``fetch``; the tests assert observable behaviour, not threading.
 """
 
 import asyncio
@@ -17,16 +19,15 @@ import pytest
 from fastapi import Depends
 from pydantic import BaseModel
 
-from fastbff import BatchArg
-from fastbff import FastBFF
-from fastbff import build_transform_annotated
-from fastbff.exceptions import AsyncDispatchError
-from fastbff.query_executor.query import Query
-from fastbff.query_executor.query_executor import QueryExecutor
+from fastbff import EntityQuery
+from fastbff import Query
+from fastbff import QueryExecutor
+from fastbff import Resolve
+from fastbff import SyncQueryExecutor
+from fastbff.exceptions import QueryNotRegisteredError
 
 # ---------------------------------------------------------------------------
-# Shared return types
-# (declared at module level so get_type_hints can resolve them in closures)
+# Shared types (module level so get_type_hints resolves them from closures)
 # ---------------------------------------------------------------------------
 
 
@@ -40,14 +41,31 @@ class _Entity:
     value: str
 
 
-@dataclass(frozen=True)
-class _User:
+class _UserDTO(BaseModel):
     id: int
+    name: str = ''
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+class _FetchPlainQuery(Query[_PlainResult]):
+    key: str
+
+
+class _FetchEntitiesQuery(EntityQuery[int, _Entity]):
+    ids: frozenset[int]
+
+
+class _FetchTenantEntitiesQuery(EntityQuery[int, _Entity]):
+    ids: frozenset[int]
+    tenant_id: int
+
+
+class _FetchUsers(EntityQuery[int, _UserDTO]):
+    ids: frozenset[int]
+
+
+async def _resolve_lead(ids: frozenset[int], executor: QueryExecutor) -> dict[int, _UserDTO]:
+    """Resolver form: fan the collected ids into the FetchUsers entity query."""
+    return await executor.fetch(_FetchUsers(ids=ids))
 
 
 def _entity_spy() -> MagicMock:
@@ -56,394 +74,423 @@ def _entity_spy() -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# Query objects
-# ---------------------------------------------------------------------------
-
-
-class _FetchPlainQuery(Query[_PlainResult]):
-    key: str
-
-
-class _FetchEntitiesQuery(Query[dict[int, _Entity]]):
-    ids: frozenset[int]
-
-
-class _FetchTenantEntitiesQuery(Query[dict[int, _Entity]]):
-    ids: frozenset[int]
-    tenant_id: int
-
-
-# ---------------------------------------------------------------------------
 # fetch() — call-level caching
 # ---------------------------------------------------------------------------
 
 
 def test_fetch_call_level_caches(app, query_executor) -> None:
-    # Arrange
     spy = MagicMock(side_effect=lambda request: _PlainResult(value=request.key))
 
     @app.queries
-    def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
-        return spy(request=query_args)
+    def fetch_plain(query: _FetchPlainQuery) -> _PlainResult:
+        return spy(request=query)
 
-    # Act
-    result_1 = query_executor.fetch(_FetchPlainQuery(key='a'))
-    result_2 = query_executor.fetch(_FetchPlainQuery(key='a'))
+    async def scenario() -> tuple[_PlainResult, _PlainResult]:
+        first = await query_executor.fetch(_FetchPlainQuery(key='a'))
+        second = await query_executor.fetch(_FetchPlainQuery(key='a'))
+        return first, second
 
-    # Assert
-    assert result_1 == result_2
+    first, second = asyncio.run(scenario())
+
+    assert first == second == _PlainResult(value='a')
     spy.assert_called_once()
 
 
 def test_fetch_different_query_fields_each_fetched(app, query_executor) -> None:
-    # Arrange
     spy = MagicMock(side_effect=lambda request: _PlainResult(value=request.key))
 
     @app.queries
-    def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
-        return spy(request=query_args)
+    def fetch_plain(query: _FetchPlainQuery) -> _PlainResult:
+        return spy(request=query)
 
-    # Act
-    result_1 = query_executor.fetch(_FetchPlainQuery(key='a'))
-    result_2 = query_executor.fetch(_FetchPlainQuery(key='b'))
+    async def scenario() -> tuple[_PlainResult, _PlainResult]:
+        return (
+            await query_executor.fetch(_FetchPlainQuery(key='a')),
+            await query_executor.fetch(_FetchPlainQuery(key='b')),
+        )
 
-    # Assert
-    assert result_1.value == 'a'
-    assert result_2.value == 'b'
+    result_a, result_b = asyncio.run(scenario())
+
+    assert result_a.value == 'a'
+    assert result_b.value == 'b'
     assert spy.call_count == 2
 
 
+def test_concurrent_identical_fetch_dedups(app, query_executor) -> None:
+    """Two concurrent fetches of the same key share one in-flight future — the
+    handler runs once."""
+    calls = 0
+
+    @app.queries
+    async def fetch_plain(query: _FetchPlainQuery) -> _PlainResult:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return _PlainResult(value=query.key)
+
+    async def scenario() -> list[_PlainResult]:
+        return await asyncio.gather(
+            query_executor.fetch(_FetchPlainQuery(key='a')),
+            query_executor.fetch(_FetchPlainQuery(key='a')),
+        )
+
+    results = asyncio.run(scenario())
+
+    assert results == [_PlainResult(value='a'), _PlainResult(value='a')]
+    assert calls == 1
+
+
 # ---------------------------------------------------------------------------
-# fetch() — entity-level caching (dict return + IDs field)
+# fetch() — entity-level caching (EntityQuery)
 # ---------------------------------------------------------------------------
 
 
 def test_fetch_entity_first_call_fetches_all(app, query_executor) -> None:
-    # Arrange
     spy = _entity_spy()
 
     @app.queries
-    def fetch_entities(query_args: _FetchEntitiesQuery) -> dict[int, _Entity]:
-        return spy(ids=query_args.ids)
+    def fetch_entities(query: _FetchEntitiesQuery) -> dict[int, _Entity]:
+        return spy(ids=query.ids)
 
-    # Act
-    result = query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
+    result = asyncio.run(query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3}))))
 
-    # Assert
     assert set(result.keys()) == {1, 2, 3}
     spy.assert_called_once()
 
 
 def test_fetch_entity_same_ids_not_refetched(app, query_executor) -> None:
-    # Arrange
     spy = _entity_spy()
 
     @app.queries
-    def fetch_entities(query_args: _FetchEntitiesQuery) -> dict[int, _Entity]:
-        return spy(ids=query_args.ids)
+    def fetch_entities(query: _FetchEntitiesQuery) -> dict[int, _Entity]:
+        return spy(ids=query.ids)
 
-    query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
-    spy.reset_mock()
+    async def scenario() -> None:
+        await query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
+        spy.reset_mock()
+        await query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
 
-    # Act
-    query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
+    asyncio.run(scenario())
 
-    # Assert
-    spy.assert_not_called()
-
-
-def test_fetch_entity_subset_not_refetched(app, query_executor) -> None:
-    # Arrange
-    spy = _entity_spy()
-
-    @app.queries
-    def fetch_entities(query_args: _FetchEntitiesQuery) -> dict[int, _Entity]:
-        return spy(ids=query_args.ids)
-
-    query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
-    spy.reset_mock()
-
-    # Act
-    result = query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2})))
-
-    # Assert
-    assert set(result.keys()) == {1, 2}
     spy.assert_not_called()
 
 
 def test_fetch_entity_overlapping_fetches_only_missing(app, query_executor) -> None:
-    # Arrange
     spy = _entity_spy()
 
     @app.queries
-    def fetch_entities(query_args: _FetchEntitiesQuery) -> dict[int, _Entity]:
-        return spy(ids=query_args.ids)
+    def fetch_entities(query: _FetchEntitiesQuery) -> dict[int, _Entity]:
+        return spy(ids=query.ids)
 
-    query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
-    spy.reset_mock()
+    async def scenario() -> dict[int, _Entity]:
+        await query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
+        spy.reset_mock()
+        return await query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({2, 3, 4})))
 
-    # Act
-    result = query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({2, 3, 4})))
+    result = asyncio.run(scenario())
 
-    # Assert
     assert set(result.keys()) == {2, 3, 4}
     spy.assert_called_once_with(ids=frozenset({4}))
 
 
-def test_fetch_absent_ids_excluded_from_result(app, query_executor) -> None:
-    # Arrange
-    spy = MagicMock(return_value={})
-
-    @app.queries
-    def fetch_entities(query_args: _FetchEntitiesQuery) -> dict[int, _Entity]:
-        return spy(ids=query_args.ids)
-
-    # Act
-    result = query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
-
-    # Assert
-    assert result == {}
-    spy.assert_called_once()
-
-
-def test_fetch_absent_ids_not_refetched_on_overlap(app, query_executor) -> None:
-    # Arrange — backend only returns id 1; ids 2 and 3 are absent.
+def test_fetch_absent_ids_excluded_and_not_refetched(app, query_executor) -> None:
+    """Backend returns only id 1; absent ids 2/3 are remembered, so an overlapping
+    request only fetches the genuinely-new id."""
     spy = MagicMock(side_effect=lambda ids: {i: _Entity(value=f'e:{i}') for i in ids if i == 1})
 
     @app.queries
-    def fetch_entities(query_args: _FetchEntitiesQuery) -> dict[int, _Entity]:
-        return spy(ids=query_args.ids)
+    def fetch_entities(query: _FetchEntitiesQuery) -> dict[int, _Entity]:
+        return spy(ids=query.ids)
 
-    result_1 = query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
-    assert set(result_1.keys()) == {1}
-    assert spy.call_count == 1
+    async def scenario() -> tuple[dict[int, _Entity], dict[int, _Entity]]:
+        first = await query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1, 2, 3})))
+        second = await query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({2, 3, 4})))
+        return first, second
 
-    # Act — overlap on absent ids 2 and 3; only the new id 4 should be fetched.
-    result_2 = query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({2, 3, 4})))
+    first, second = asyncio.run(scenario())
 
-    # Assert
-    assert result_2 == {}  # 4 is also absent
+    assert set(first.keys()) == {1}
+    assert second == {}
     spy.assert_called_with(ids=frozenset({4}))
     assert spy.call_count == 2
 
 
-def test_fetch_absent_id_becomes_present_in_new_executor(app, query_executor) -> None:
-    # Arrange — absence is cached per-executor (per-request); a new executor must re-fetch.
+def test_fetch_absence_is_per_executor(app, query_executor) -> None:
+    """Absence is cached per-request; a fresh executor re-fetches."""
     call_args: list[frozenset[int]] = []
 
     @app.queries
-    def fetch_entities(query_args: _FetchEntitiesQuery) -> dict[int, _Entity]:
-        call_args.append(query_args.ids)
+    def fetch_entities(query: _FetchEntitiesQuery) -> dict[int, _Entity]:
+        call_args.append(query.ids)
         return {}
 
-    query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1})))
+    async def scenario() -> None:
+        await query_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1})))
+        fresh = QueryExecutor.create(query_annotations=app.query_annotations)
+        await fresh.fetch(_FetchEntitiesQuery(ids=frozenset({1})))
 
-    # Act
-    fresh_executor = QueryExecutor.create(query_annotations=app.query_annotations)
-    fresh_executor.fetch(_FetchEntitiesQuery(ids=frozenset({1})))
+    asyncio.run(scenario())
 
-    # Assert
     assert len(call_args) == 2
 
 
 def test_fetch_entity_discriminating_field_does_not_share_bucket(app, query_executor) -> None:
-    """An entity query with a field beyond its ids (e.g. ``tenant_id``) must not
+    """An entity query with a field beyond its ids (``tenant_id``) must not
     cross-serve cached entries between different values of that field."""
-    # Arrange — the backend tags each entity with the tenant it was fetched for.
     seen: list[tuple[int, frozenset[int]]] = []
 
     @app.queries
-    def fetch_tenant_entities(query_args: _FetchTenantEntitiesQuery) -> dict[int, _Entity]:
-        seen.append((query_args.tenant_id, query_args.ids))
-        return {i: _Entity(value=f't{query_args.tenant_id}:{i}') for i in query_args.ids}
+    def fetch_tenant_entities(query: _FetchTenantEntitiesQuery) -> dict[int, _Entity]:
+        seen.append((query.tenant_id, query.ids))
+        return {i: _Entity(value=f't{query.tenant_id}:{i}') for i in query.ids}
 
-    # Act — same ids, different tenants, within one request/executor.
-    tenant_1 = query_executor.fetch(_FetchTenantEntitiesQuery(ids=frozenset({1, 2}), tenant_id=1))
-    tenant_2 = query_executor.fetch(_FetchTenantEntitiesQuery(ids=frozenset({1, 2}), tenant_id=2))
+    async def scenario() -> tuple[dict[int, _Entity], dict[int, _Entity]]:
+        return (
+            await query_executor.fetch(_FetchTenantEntitiesQuery(ids=frozenset({1, 2}), tenant_id=1)),
+            await query_executor.fetch(_FetchTenantEntitiesQuery(ids=frozenset({1, 2}), tenant_id=2)),
+        )
 
-    # Assert — each tenant is fetched independently and gets its own entities.
+    tenant_1, tenant_2 = asyncio.run(scenario())
+
     assert tenant_1 == {1: _Entity(value='t1:1'), 2: _Entity(value='t1:2')}
     assert tenant_2 == {1: _Entity(value='t2:1'), 2: _Entity(value='t2:2')}
     assert seen == [(1, frozenset({1, 2})), (2, frozenset({1, 2}))]
 
 
 def test_fetch_entity_same_discriminating_field_shares_bucket(app, query_executor) -> None:
-    """Within the same discriminating value, overlapping id sets still share the
-    entity cache — only missing ids are fetched."""
-    # Arrange
     spy = MagicMock(side_effect=lambda tenant_id, ids: {i: _Entity(value=f't{tenant_id}:{i}') for i in ids})
 
     @app.queries
-    def fetch_tenant_entities(query_args: _FetchTenantEntitiesQuery) -> dict[int, _Entity]:
-        return spy(tenant_id=query_args.tenant_id, ids=query_args.ids)
+    def fetch_tenant_entities(query: _FetchTenantEntitiesQuery) -> dict[int, _Entity]:
+        return spy(tenant_id=query.tenant_id, ids=query.ids)
 
-    query_executor.fetch(_FetchTenantEntitiesQuery(ids=frozenset({1, 2, 3}), tenant_id=1))
-    spy.reset_mock()
+    async def scenario() -> dict[int, _Entity]:
+        await query_executor.fetch(_FetchTenantEntitiesQuery(ids=frozenset({1, 2, 3}), tenant_id=1))
+        spy.reset_mock()
+        return await query_executor.fetch(_FetchTenantEntitiesQuery(ids=frozenset({2, 3, 4}), tenant_id=1))
 
-    # Act — same tenant, overlapping ids.
-    result = query_executor.fetch(_FetchTenantEntitiesQuery(ids=frozenset({2, 3, 4}), tenant_id=1))
+    result = asyncio.run(scenario())
 
-    # Assert — only the new id 4 hits the backend.
     assert set(result.keys()) == {2, 3, 4}
     spy.assert_called_once_with(tenant_id=1, ids=frozenset({4}))
 
 
+def test_plain_dict_query_is_not_entity_cached(app, query_executor) -> None:
+    """A plain ``Query[dict[K, V]]`` (not an EntityQuery) gets call-level caching
+    only — no per-id sharing, even with an iterable field."""
+
+    class _PlainDictQuery(Query[dict[int, _Entity]]):
+        ids: frozenset[int]
+
+    spy = _entity_spy()
+
+    @app.queries
+    def fetch_plain_dict(query: _PlainDictQuery) -> dict[int, _Entity]:
+        return spy(ids=query.ids)
+
+    async def scenario() -> None:
+        await query_executor.fetch(_PlainDictQuery(ids=frozenset({1, 2, 3})))
+        # A subset would be served from the entity cache if this were an
+        # EntityQuery; a plain query re-fetches (different call key).
+        await query_executor.fetch(_PlainDictQuery(ids=frozenset({1, 2})))
+
+    asyncio.run(scenario())
+
+    assert spy.call_count == 2
+
+
 # ---------------------------------------------------------------------------
-# afetch() — async handlers and transformers (anyio worker-thread bridge)
+# Render pipeline (Resolve)
 # ---------------------------------------------------------------------------
 
 
-def test_afetch_runs_async_handler(app, query_executor) -> None:
-    """A bare ``async def`` handler is awaited and its result returned."""
-
-    @app.queries
-    async def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
-        return _PlainResult(value=query_args.key)
-
-    result = asyncio.run(query_executor.afetch(_FetchPlainQuery(key='a')))
-
-    assert result == _PlainResult(value='a')
-
-
-def test_afetch_caches_async_handler(app, query_executor) -> None:
-    """Awaited results land in the call cache like sync ones — handler runs once."""
-    calls = 0
-
-    @app.queries
-    async def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
-        nonlocal calls
-        calls += 1
-        return _PlainResult(value=query_args.key)
-
-    async def scenario() -> tuple[_PlainResult, _PlainResult]:
-        first = await query_executor.afetch(_FetchPlainQuery(key='a'))
-        second = await query_executor.afetch(_FetchPlainQuery(key='a'))
-        return first, second
-
-    first, second = asyncio.run(scenario())
-
-    assert first == second == _PlainResult(value='a')
-    assert calls == 1
-
-
-def test_sync_fetch_of_async_handler_in_pure_sync_context_raises(app, query_executor) -> None:
-    """No worker-thread portal to bridge through → clear error, not a bare coroutine."""
-
-    @app.queries
-    async def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
-        return _PlainResult(value=query_args.key)
-
-    with pytest.raises(AsyncDispatchError, match='afetch'):
-        query_executor.fetch(_FetchPlainQuery(key='a'))
-
-
-def test_sync_fetch_of_async_handler_bridges_in_worker_thread(app, query_executor) -> None:
-    """The FastAPI-native path: a *sync* endpoint runs in Starlette's worker thread,
-    so sync ``fetch`` can bridge an async handler onto the loop. Simulated here by
-    running ``fetch`` via ``anyio.to_thread.run_sync`` (what Starlette does)."""
-
-    @app.queries
-    async def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
-        return _PlainResult(value=query_args.key)
-
-    async def scenario() -> _PlainResult:
-        return await anyio.to_thread.run_sync(query_executor.fetch, _FetchPlainQuery(key='a'))
-
-    assert asyncio.run(scenario()) == _PlainResult(value='a')
-
-
-def test_afetch_async_handler_through_transformer() -> None:
-    """The N+1 case: a sync transformer fetches an *async* handler, driven by afetch.
-
-    One bulk fetch for the whole page; the async ``fetch_users`` coroutine is
-    bridged onto the loop from the validation worker thread.
-    """
-    app = FastBFF()
+def test_render_resolve_query_form_one_bulk_fetch(app) -> None:
+    """``Resolve(FetchUsers)`` collects owner ids across the page and issues one
+    bulk entity fetch; overlapping ids collapse."""
     db_calls: list[frozenset[int]] = []
 
-    class _FetchUsers(Query[dict[int, _User]]):
-        ids: frozenset[int]
-
     @app.queries
-    async def fetch_users(args: _FetchUsers) -> dict[int, _User]:
-        db_calls.append(args.ids)
-        return {i: _User(id=i) for i in args.ids}
-
-    @app.transformer
-    def transform_owner(
-        owner_id: int,
-        batch: BatchArg[int],
-        query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
-    ) -> _User | None:
-        return query_executor.fetch(_FetchUsers(ids=batch.ids)).get(owner_id)
-
-    _OwnerTransformerAnnotated = build_transform_annotated(transform_owner)
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        db_calls.append(query.ids)
+        return {i: _UserDTO(id=i, name=f'u{i}') for i in query.ids}
 
     class _TeamDTO(BaseModel):
         id: int
-        owner: _OwnerTransformerAnnotated
+        owner: Annotated[_UserDTO | None, Resolve(_FetchUsers)]
 
     class _FetchTeams(Query[list[_TeamDTO]]):
         pass
 
     @app.queries(_FetchTeams)
-    def fetch_teams() -> list[dict[str, int]]:
+    async def fetch_teams() -> list[dict[str, int]]:
         return [{'id': 1, 'owner': 10}, {'id': 2, 'owner': 20}, {'id': 3, 'owner': 10}]
 
-    query_executor = app.finalize()()
-    results = asyncio.run(query_executor.afetch(_FetchTeams()))
+    executor = app.finalize()()
+    results = asyncio.run(executor.fetch(_FetchTeams()))
 
-    assert db_calls == [frozenset({10, 20})]  # single bulk fetch
-    assert [row.owner for row in results] == [_User(id=10), _User(id=20), _User(id=10)]
+    assert db_calls == [frozenset({10, 20})]
+    assert [row.owner.id for row in results] == [10, 20, 10]
 
 
-def test_afetch_async_transformer() -> None:
-    """An ``async def`` transformer is itself bridged onto the loop."""
-    app = FastBFF()
-
-    class _FetchUsers(Query[dict[int, _User]]):
-        ids: frozenset[int]
+def test_render_resolver_form(app) -> None:
+    """``Resolve(resolver=fn)`` invokes the resolver with the collected ids plus
+    the executor injected by type."""
 
     @app.queries
-    def fetch_users(args: _FetchUsers) -> dict[int, _User]:
-        return {i: _User(id=i) for i in args.ids}
-
-    @app.transformer
-    async def transform_owner(
-        owner_id: int,
-        batch: BatchArg[int],
-        query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
-    ) -> _User | None:
-        return query_executor.fetch(_FetchUsers(ids=batch.ids)).get(owner_id)
-
-    _OwnerTransformerAnnotated = build_transform_annotated(transform_owner)
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        return {i: _UserDTO(id=i, name=f'u{i}') for i in query.ids}
 
     class _TeamDTO(BaseModel):
         id: int
-        owner: _OwnerTransformerAnnotated
+        lead: Annotated[_UserDTO | None, Resolve(resolver=_resolve_lead)]
 
     class _FetchTeams(Query[list[_TeamDTO]]):
         pass
 
     @app.queries(_FetchTeams)
-    def fetch_teams() -> list[dict[str, int]]:
-        return [{'id': 1, 'owner': 10}, {'id': 2, 'owner': 20}]
+    async def fetch_teams() -> list[dict[str, int]]:
+        return [{'id': 1, 'lead': 10}, {'id': 2, 'lead': 20}]
 
-    query_executor = app.finalize()()
-    results = asyncio.run(query_executor.afetch(_FetchTeams()))
+    executor = app.finalize()()
+    results = asyncio.run(executor.fetch(_FetchTeams()))
 
-    assert [row.owner for row in results] == [_User(id=10), _User(id=20)]
+    assert [row.lead.id for row in results] == [10, 20]
 
 
-def test_afetch_async_handler_composition_does_not_exhaust_pool() -> None:
-    """Async handlers that compose via nested ``afetch`` must run on the loop, not
-    each grab a worker thread — otherwise deep composition deadlocks a small pool.
+def test_render_absent_resolve_becomes_none(app) -> None:
+    """An id with no backing entity resolves to None (field is optional)."""
 
-    The pool is shrunk to a single token, far below the composition depth: the
-    loop-native path uses no worker threads and completes, whereas the old
-    offload-per-level path would exhaust the pool and hang (caught by the
-    ``fail_after`` deadline)."""
-    app = FastBFF()
+    @app.queries
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        return {i: _UserDTO(id=i, name=f'u{i}') for i in query.ids if i != 99}
+
+    class _TeamDTO(BaseModel):
+        id: int
+        owner: Annotated[_UserDTO | None, Resolve(_FetchUsers)]
+
+    class _FetchTeams(Query[list[_TeamDTO]]):
+        pass
+
+    @app.queries(_FetchTeams)
+    async def fetch_teams() -> list[dict[str, int]]:
+        return [{'id': 1, 'owner': 10}, {'id': 2, 'owner': 99}]
+
+    executor = app.finalize()()
+    results = asyncio.run(executor.fetch(_FetchTeams()))
+
+    assert results[0].owner == _UserDTO(id=10, name='u10')
+    assert results[1].owner is None
+
+
+def test_render_reuses_entity_cache_for_direct_fetch(app) -> None:
+    """Ids fetched during render populate the entity cache, so a later direct
+    fetch of an already-seen id issues no new backend call."""
+    db_calls: list[frozenset[int]] = []
+
+    @app.queries
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        db_calls.append(query.ids)
+        return {i: _UserDTO(id=i, name=f'u{i}') for i in query.ids}
+
+    class _TeamDTO(BaseModel):
+        id: int
+        owner: Annotated[_UserDTO | None, Resolve(_FetchUsers)]
+
+    class _FetchTeams(Query[list[_TeamDTO]]):
+        pass
+
+    @app.queries(_FetchTeams)
+    async def fetch_teams() -> list[dict[str, int]]:
+        return [{'id': 1, 'owner': 10}]
+
+    executor = app.finalize()()
+
+    async def scenario() -> _UserDTO | None:
+        await executor.fetch(_FetchTeams())
+        users = await executor.fetch(_FetchUsers(ids=frozenset({10})))
+        return users.get(10)
+
+    user = asyncio.run(scenario())
+
+    assert user == _UserDTO(id=10, name='u10')
+    assert db_calls == [frozenset({10})]  # id 10 fetched once, reused
+
+
+def test_render_collection_resolve_field(app) -> None:
+    """A collection resolve field (``list[UserDTO]``) resolves each id in the raw
+    list; the whole page's ids collapse into one bulk fetch."""
+    db_calls: list[frozenset[int]] = []
+
+    @app.queries
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        db_calls.append(query.ids)
+        return {i: _UserDTO(id=i, name=f'u{i}') for i in query.ids}
+
+    class _TeamDTO(BaseModel):
+        id: int
+        members: Annotated[list[_UserDTO], Resolve(_FetchUsers)]
+
+    class _FetchTeams(Query[list[_TeamDTO]]):
+        pass
+
+    @app.queries(_FetchTeams)
+    async def fetch_teams() -> list[dict[str, Any]]:
+        return [{'id': 1, 'members': [10, 20]}, {'id': 2, 'members': [20, 30]}]
+
+    executor = app.finalize()()
+    results = asyncio.run(executor.fetch(_FetchTeams()))
+
+    assert db_calls == [frozenset({10, 20, 30})]
+    assert [[member.id for member in row.members] for row in results] == [[10, 20], [20, 30]]
+
+
+def test_render_nested_model_field(app) -> None:
+    """A field typed as another resolve-bearing model resolves depth-first, with the
+    nested model's ids batched across the whole page (one bulk fetch)."""
+    db_calls: list[frozenset[int]] = []
+
+    @app.queries
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        db_calls.append(query.ids)
+        return {i: _UserDTO(id=i, name=f'u{i}') for i in query.ids}
+
+    class _MemberDTO(BaseModel):
+        role: str
+        user: Annotated[_UserDTO | None, Resolve(_FetchUsers)]
+
+    class _TeamDTO(BaseModel):
+        id: int
+        lead: _MemberDTO
+
+    class _FetchTeams(Query[list[_TeamDTO]]):
+        pass
+
+    @app.queries(_FetchTeams)
+    async def fetch_teams() -> list[dict[str, Any]]:
+        return [
+            {'id': 1, 'lead': {'role': 'owner', 'user': 10}},
+            {'id': 2, 'lead': {'role': 'owner', 'user': 20}},
+            {'id': 3, 'lead': {'role': 'owner', 'user': 10}},
+        ]
+
+    executor = app.finalize()()
+    results = asyncio.run(executor.fetch(_FetchTeams()))
+
+    # Nested user ids across the page collapse into a single bulk fetch.
+    assert db_calls == [frozenset({10, 20})]
+    assert [row.lead.user.id for row in results] == [10, 20, 10]
+    assert [row.lead.role for row in results] == ['owner', 'owner', 'owner']
+
+
+# ---------------------------------------------------------------------------
+# Async composition + concurrency
+# ---------------------------------------------------------------------------
+
+
+def test_async_composition_does_not_exhaust_pool(app) -> None:
+    """Async handlers that compose via nested ``fetch`` run loop-native, so deep
+    composition never grabs a worker thread per level and deadlocks a small pool.
+    """
 
     class _Leaf(Query[_PlainResult]):
         n: int
@@ -452,46 +499,31 @@ def test_afetch_async_handler_composition_does_not_exhaust_pool() -> None:
         depth: int
 
     @app.queries
-    async def leaf(query_args: _Leaf) -> _PlainResult:
-        return _PlainResult(value=f'leaf:{query_args.n}')
+    async def leaf(query: _Leaf) -> _PlainResult:
+        return _PlainResult(value=f'leaf:{query.n}')
 
     @app.queries
     async def chain(
-        query_args: _Chain,
+        query: _Chain,
         executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
     ) -> _PlainResult:
-        if query_args.depth == 0:
-            return await executor.afetch(_Leaf(n=0))
-        return await executor.afetch(_Chain(depth=query_args.depth - 1))
+        if query.depth == 0:
+            return await executor.fetch(_Leaf(n=0))
+        return await executor.fetch(_Chain(depth=query.depth - 1))
 
-    query_executor = app.finalize()()
+    executor = app.finalize()()
 
     async def scenario() -> _PlainResult:
         anyio.to_thread.current_default_thread_limiter().total_tokens = 1
         with anyio.fail_after(5):
-            return await query_executor.afetch(_Chain(depth=8))
+            return await executor.fetch(_Chain(depth=8))
 
     assert asyncio.run(scenario()) == _PlainResult(value='leaf:0')
 
 
-def test_call_handler_rejects_undetected_coroutine(query_executor) -> None:
-    """A callable that hides an ``async`` body from ``iscoroutinefunction`` (so it
-    runs down the sync branch but returns a coroutine) must fail loudly rather
-    than cache an unawaited coroutine — the corruption the bridge guards against."""
-
-    async def _inner() -> str:
-        return 'a'
-
-    def sneaky() -> Any:  # sync signature, returns a coroutine
-        return _inner()
-
-    with pytest.raises(AsyncDispatchError, match='coroutine'):
-        query_executor.call_handler(sneaky)
-
-
-def test_concurrent_afetch_is_cache_safe(app, query_executor) -> None:
-    """``asyncio.gather`` over independent async queries runs on parallel worker
-    threads sharing one cache — results must be correct (thread-safety smoke)."""
+def test_concurrent_fetch_is_cache_safe(app, query_executor) -> None:
+    """``asyncio.gather`` over independent queries shares one cache — results
+    stay correct."""
 
     class _FetchA(Query[_PlainResult]):
         key: str
@@ -500,20 +532,20 @@ def test_concurrent_afetch_is_cache_safe(app, query_executor) -> None:
         key: str
 
     @app.queries
-    async def fetch_a(query_args: _FetchA) -> _PlainResult:
+    async def fetch_a(query: _FetchA) -> _PlainResult:
         await asyncio.sleep(0)
-        return _PlainResult(value=f'a:{query_args.key}')
+        return _PlainResult(value=f'a:{query.key}')
 
     @app.queries
-    async def fetch_b(query_args: _FetchB) -> _PlainResult:
+    async def fetch_b(query: _FetchB) -> _PlainResult:
         await asyncio.sleep(0)
-        return _PlainResult(value=f'b:{query_args.key}')
+        return _PlainResult(value=f'b:{query.key}')
 
     async def scenario() -> list[_PlainResult]:
         return await asyncio.gather(
-            query_executor.afetch(_FetchA(key='a')),
-            query_executor.afetch(_FetchB(key='b')),
-            query_executor.afetch(_FetchA(key='a')),
+            query_executor.fetch(_FetchA(key='a')),
+            query_executor.fetch(_FetchB(key='b')),
+            query_executor.fetch(_FetchA(key='a')),
         )
 
     results = asyncio.run(scenario())
@@ -525,12 +557,47 @@ def test_concurrent_afetch_is_cache_safe(app, query_executor) -> None:
     ]
 
 
-def test_query_executor_has_empty_signature() -> None:
-    """Endpoints declare ``Annotated[QueryExecutor, Depends(QueryExecutor)]``, so
-    FastAPI introspects ``inspect.signature(QueryExecutor)`` at startup. The
-    parameterless ``__init__`` must keep that signature empty — otherwise
-    ``__init__`` params would leak in as request fields. Guards the invariant
-    that replaced the former ``QueryExecutor.__signature__ = Signature([])``
-    mutation.
-    """
+# ---------------------------------------------------------------------------
+# SyncQueryExecutor facade
+# ---------------------------------------------------------------------------
+
+
+def test_sync_query_executor_bridges_async_handler(app) -> None:
+    """``SyncQueryExecutor.fetch`` (called from a worker thread, as a sync endpoint
+    would) bridges onto the loop and reaches an async handler."""
+
+    @app.queries
+    async def fetch_plain(query: _FetchPlainQuery) -> _PlainResult:
+        return _PlainResult(value=query.key)
+
+    async def scenario() -> _PlainResult:
+        inner = QueryExecutor.create(query_annotations=app.query_annotations)
+        sync_executor = SyncQueryExecutor.create(inner)
+        return await anyio.to_thread.run_sync(sync_executor.fetch, _FetchPlainQuery(key='a'))
+
+    assert asyncio.run(scenario()) == _PlainResult(value='a')
+
+
+# ---------------------------------------------------------------------------
+# DI-facing empty signatures
+# ---------------------------------------------------------------------------
+
+
+def test_executors_have_empty_signature() -> None:
+    """Endpoints declare ``Depends(QueryExecutor)`` / ``Depends(SyncQueryExecutor)``,
+    so FastAPI introspects each class's signature at startup. A parameterless
+    ``__init__`` keeps it empty — no params leak in as request fields; the
+    mount-time override supplies the real instance."""
     assert list(signature(QueryExecutor).parameters) == []
+    assert list(signature(SyncQueryExecutor).parameters) == []
+
+
+def test_fetch_unregistered_query_raises(query_executor) -> None:
+    class _Unregistered(Query[_PlainResult]):
+        key: str
+
+    async def scenario() -> Any:
+        return await query_executor.fetch(_Unregistered(key='a'))
+
+    with pytest.raises(QueryNotRegisteredError):
+        asyncio.run(scenario())

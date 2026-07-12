@@ -1,10 +1,9 @@
 """Integration: a *sync* FastAPI endpoint reaches an ``async def`` handler.
 
-This exercises the headline DX promise — a sync endpoint needs no extra code
-because Starlette runs it in an anyio worker thread, where fastbff bridges the
-async handler's coroutine onto the loop. Unlike the unit test that *simulates*
-the worker thread with ``anyio.to_thread.run_sync``, this drives the real
-Starlette stack through ``TestClient``.
+A sync endpoint injects :class:`SyncQueryExecutor`, whose ``fetch`` bridges the
+async executor onto the event loop; the async handler then runs loop-native.
+This drives the real Starlette stack through ``TestClient`` rather than
+simulating the worker thread.
 """
 
 from typing import Annotated
@@ -16,7 +15,7 @@ from pydantic import BaseModel
 
 from fastbff import FastBFF
 from fastbff import Query
-from fastbff import QueryExecutor
+from fastbff import SyncQueryExecutor
 
 app = FastBFF()
 
@@ -31,8 +30,8 @@ class _FetchUser(Query[_UserDTO]):
 
 
 @app.queries
-async def fetch_user(args: _FetchUser) -> _UserDTO:
-    return _UserDTO(id=args.user_id, name=f'u{args.user_id}')
+async def fetch_user(query: _FetchUser) -> _UserDTO:
+    return _UserDTO(id=query.user_id, name=f'u{query.user_id}')
 
 
 fastapi_app = FastAPI()
@@ -41,11 +40,11 @@ fastapi_app = FastAPI()
 @fastapi_app.get('/user/{user_id}')
 def get_user(
     user_id: int,
-    query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+    sync_query_executor: Annotated[SyncQueryExecutor, Depends(SyncQueryExecutor)],
 ) -> _UserDTO:
-    # Sync endpoint, async handler, plain ``fetch`` — no ``afetch``, no extra
-    # code. Starlette runs this in a worker thread, so the bridge just works.
-    return query_executor.fetch(_FetchUser(user_id=user_id))
+    # Sync endpoint reaching an async handler: SyncQueryExecutor.fetch bridges
+    # to the loop, the async handler runs loop-native. No extra code.
+    return sync_query_executor.fetch(_FetchUser(user_id=user_id))
 
 
 app.mount(fastapi_app)

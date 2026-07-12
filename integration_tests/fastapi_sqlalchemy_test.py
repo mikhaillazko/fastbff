@@ -71,8 +71,8 @@ def test_http_route_returns_expected_payload(client: TestClient, captured_sql: l
 
 
 def test_async_route_returns_expected_payload(client: TestClient, captured_sql: list[str]) -> None:
-    """The async endpoint (`await afetch`) returns the same payload and holds the
-    same single-bulk-SELECT N+1 contract as the sync route, through the thread bridge."""
+    """The async endpoint (`await fetch`) returns the same payload and holds the
+    same single-bulk-SELECT N+1 contract as the sync route."""
     # Act
     response = client.get('/teams-async')
 

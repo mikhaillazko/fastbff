@@ -5,35 +5,28 @@ Public surface
 
 App / Router
 ~~~~~~~~~~~~
-- :class:`FastBFF` — composition root: bundles the queries registry, transformer
-  registry, and exposes FastAPI-native DI via :meth:`FastBFF.mount`.
+- :class:`FastBFF` — composition root: bundles the queries registry and exposes
+  FastAPI-native DI via :meth:`FastBFF.mount`.
 - :class:`QueryRouter` — local registration scope, attached via
   :meth:`FastBFF.include_router`.
 
-Composition
-~~~~~~~~~~~
-- :class:`BatchArg` — marker parameter type for batch-aware transformers.
-- :func:`build_transform_annotated` — build the ``Annotated[...]`` metadata
-  for a ``@transformer``-registered function.
-- :class:`TransformerAnnotation` — the metadata object placed inside
-  ``Annotated[ReturnType, ...]`` (returned by ``build_transform_annotated``).
-
 Queries
 ~~~~~~~
-- :class:`Query` — typed query object (``Query[T]``).
-- :class:`QueryExecutor` — per-request dispatcher with call-level and
-  entity-level caching. Sync endpoints call ``fetch``; ``async def`` endpoints
-  ``await afetch``, which offloads the fetch machinery to a worker thread and
-  bridges ``async def`` handlers/transformers onto the loop. Auto-wraps handler
-  results through ``validate_batch`` when the handler's declared return type is
-  a :class:`pydantic.BaseModel` (or ``list`` thereof) with transformer fields,
-  so end users never call ``validate_batch`` directly.
+- :class:`Query` — typed query object (``Query[T]``), call-level caching.
+- :class:`EntityQuery` — ``Query[dict[K, V]]`` with an ids field, opting into
+  entity-level caching (overlapping id sets share cached entries).
+- :class:`QueryExecutor` — per-request, **async-native** dispatcher. Async
+  endpoints ``await query_executor.fetch(query)``.
+- :class:`SyncQueryExecutor` — sync facade for sync endpoints;
+  ``sync_query_executor.fetch(query)`` bridges onto the event loop.
 - :class:`QueryExecutorMock` — test double for stubbing queries.
 
-Test helpers
-~~~~~~~~~~~~
-- :func:`transformer_metadata` — extract the :class:`TransformerAnnotation`
-  attached to a ``@transformer`` function or an annotated field alias.
+Composition
+~~~~~~~~~~~
+- :class:`Resolve` — field annotation declaring how a relation field is
+  populated (``Resolve(SomeEntityQuery)`` or ``Resolve(resolver=fn)``). The
+  executor runs a plan → concurrent-fetch → merge pipeline; ``model_validate``
+  stays context-free.
 
 Exceptions
 ~~~~~~~~~~
@@ -44,22 +37,19 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
 from .app import FastBFF
-from .exceptions import AsyncDispatchError
-from .exceptions import BatchContextMissingError
 from .exceptions import CacheKeyError
 from .exceptions import FastBFFError
 from .exceptions import QueryNotRegisteredError
 from .exceptions import QueryRegistrationError
 from .exceptions import RegistrationError
-from .exceptions import TransformerRegistrationError
+from .exceptions import ResolveRegistrationError
+from .query_executor.query import EntityQuery
 from .query_executor.query import Query
 from .query_executor.query_executor import QueryExecutor
+from .query_executor.query_executor import SyncQueryExecutor
 from .query_executor.query_executor_mock import QueryExecutorMock
+from .resolve import Resolve
 from .router import QueryRouter
-from .transformer.registry import build_transform_annotated
-from .transformer.registry import transformer_metadata
-from .transformer.types import BatchArg
-from .transformer.types import TransformerAnnotation
 
 try:
     __version__ = _version('fastbff')
@@ -71,24 +61,19 @@ __all__ = [
     # App / Router
     'FastBFF',
     'QueryRouter',
-    # Composition
-    'BatchArg',
     # Queries
+    'EntityQuery',
     'Query',
     'QueryExecutor',
     'QueryExecutorMock',
-    # Transformer
-    'TransformerAnnotation',
-    'build_transform_annotated',
-    # Test helpers
-    'transformer_metadata',
+    'SyncQueryExecutor',
+    # Composition
+    'Resolve',
     # Exceptions
-    'AsyncDispatchError',
-    'BatchContextMissingError',
     'CacheKeyError',
     'FastBFFError',
     'QueryNotRegisteredError',
     'QueryRegistrationError',
     'RegistrationError',
-    'TransformerRegistrationError',
+    'ResolveRegistrationError',
 ]
