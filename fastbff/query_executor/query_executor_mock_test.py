@@ -1,11 +1,20 @@
-"""Tests for ``QueryExecutorMock`` — stub/reset semantics."""
+"""Tests for ``QueryExecutorMock`` — stub/reset semantics.
+
+``fetch`` is a coroutine, so each scenario drives it with ``asyncio.run`` — no
+pytest-asyncio plugin required. Stubs short-circuit the real handler on both
+direct ``await mock.fetch(...)`` calls and the render pipeline (``Resolve``).
+"""
 
 import asyncio
 from dataclasses import dataclass
-from unittest.mock import MagicMock
+from typing import Annotated
 
-from fastbff.query_executor.query import Query
-from fastbff.query_executor.query_executor_mock import QueryExecutorMock
+from pydantic import BaseModel
+
+from fastbff import EntityQuery
+from fastbff import Query
+from fastbff import QueryExecutorMock
+from fastbff import Resolve
 
 
 @dataclass(frozen=True)
@@ -13,62 +22,98 @@ class _PlainResult:
     value: str
 
 
+class _UserDTO(BaseModel):
+    id: int
+    name: str = ''
+
+
 class _FetchPlainQuery(Query[_PlainResult]):
     key: str
 
 
-def test_mock_stub_query_returns_stubbed_value(app) -> None:
-    # Arrange
-    mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
-    expected = _PlainResult(value='stubbed')
-    mock.stub_query(_FetchPlainQuery, expected)
-
-    # Act
-    result = mock.fetch(_FetchPlainQuery(key='anything'))
-
-    # Assert
-    assert result is expected
+class _FetchUsers(EntityQuery[int, _UserDTO]):
+    ids: frozenset[int]
 
 
-def test_mock_afetch_honours_stub_over_async_handler(app) -> None:
-    """A stubbed query short-circuits ``afetch`` even when the real handler is
-    async — the async path dispatches to ``_afetch_async`` (bypassing ``fetch``),
-    so the mock must guard ``afetch`` too."""
+def test_mock_stub_query_returns_stub_without_calling_handler(app) -> None:
+    """A stubbed query short-circuits ``fetch`` — the (async) handler never runs."""
     calls = 0
 
     @app.queries
-    async def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
+    async def fetch_plain(query: _FetchPlainQuery) -> _PlainResult:
         nonlocal calls
         calls += 1
-        return _PlainResult(value=query_args.key)
+        return _PlainResult(value=query.key)
 
     mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
     stub = _PlainResult(value='stubbed')
     mock.stub_query(_FetchPlainQuery, stub)
 
-    # Act
-    result = asyncio.run(mock.afetch(_FetchPlainQuery(key='real')))
+    result = asyncio.run(mock.fetch(_FetchPlainQuery(key='real')))
 
-    # Assert
     assert result is stub
     assert calls == 0
 
 
-def test_mock_reset_clears_query_stubs(app) -> None:
-    # Arrange
-    spy = MagicMock(side_effect=lambda request: _PlainResult(value=request.key))
+def test_mock_unstubbed_query_falls_through_to_real_handler(app) -> None:
+    """An un-stubbed query reaches the real ``QueryExecutor.fetch``."""
 
     @app.queries
-    def fetch_plain(query_args: _FetchPlainQuery) -> _PlainResult:
-        return spy(request=query_args)
+    async def fetch_plain(query: _FetchPlainQuery) -> _PlainResult:
+        return _PlainResult(value=query.key)
+
+    mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
+
+    result = asyncio.run(mock.fetch(_FetchPlainQuery(key='real')))
+
+    assert result == _PlainResult(value='real')
+
+
+def test_mock_reset_clears_query_stubs(app) -> None:
+    """``reset_mock`` drops the stub, so the next fetch hits the real handler."""
+
+    @app.queries
+    async def fetch_plain(query: _FetchPlainQuery) -> _PlainResult:
+        return _PlainResult(value=query.key)
 
     mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
     mock.stub_query(_FetchPlainQuery, _PlainResult(value='stubbed'))
     mock.reset_mock()
 
-    # Act
-    result = mock.fetch(_FetchPlainQuery(key='real'))
+    result = asyncio.run(mock.fetch(_FetchPlainQuery(key='real')))
 
-    # Assert
     assert result.value == 'real'
-    spy.assert_called_once()
+
+
+def test_mock_stubbed_entity_query_honoured_through_resolve(app) -> None:
+    """A stubbed ``EntityQuery`` short-circuits its handler even when reached via a
+    ``Resolve(_FetchUsers)`` field on a rendered model."""
+    db_calls = 0
+
+    @app.queries
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        nonlocal db_calls
+        db_calls += 1
+        return {i: _UserDTO(id=i, name=f'db:u{i}') for i in query.ids}
+
+    class _TeamDTO(BaseModel):
+        id: int
+        owner: Annotated[_UserDTO | None, Resolve(_FetchUsers)]
+
+    class _FetchTeams(Query[list[_TeamDTO]]):
+        pass
+
+    @app.queries(_FetchTeams)
+    async def fetch_teams() -> list[dict[str, int]]:
+        return [{'id': 1, 'owner': 10}, {'id': 2, 'owner': 20}]
+
+    mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
+    mock.stub_query(
+        _FetchUsers,
+        {10: _UserDTO(id=10, name='stub:u10'), 20: _UserDTO(id=20, name='stub:u20')},
+    )
+
+    results = asyncio.run(mock.fetch(_FetchTeams()))
+
+    assert [row.owner.name for row in results] == ['stub:u10', 'stub:u20']
+    assert db_calls == 0

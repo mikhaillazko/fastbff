@@ -1,12 +1,12 @@
 """Tests for ``QueryRouter`` registration semantics and type checking."""
 
+import asyncio
 from dataclasses import dataclass
 
 import pytest
 
+from fastbff import Query
 from fastbff.exceptions import QueryRegistrationError
-from fastbff.exceptions import TransformerRegistrationError
-from fastbff.query_executor.query import Query
 
 
 @dataclass(frozen=True)
@@ -71,7 +71,7 @@ def test_parameterless_fetch_via_query_executor(app, query_executor) -> None:
         return [_Entity(value='a'), _Entity(value='b')]
 
     # Act
-    result = query_executor.fetch(_FetchAllEntities())
+    result = asyncio.run(query_executor.fetch(_FetchAllEntities()))
 
     # Assert
     assert result == [_Entity(value='a'), _Entity(value='b')]
@@ -100,24 +100,6 @@ def test_router_raises_on_duplicate_query_function(query_router) -> None:
         query_router.queries(fetch_plain)
 
 
-def test_router_raises_on_duplicate_transformer_function(query_router) -> None:
-    """Re-registering the same function as a transformer on a single router raises.
-
-    Mirrors the ``@queries`` rule: silent overwrite is the worse failure
-    mode because the second registration takes effect without any signal.
-    """
-
-    # Arrange
-    def transform_value(value: str) -> str:
-        return value
-
-    query_router.transformer(transform_value)
-
-    # Act & Assert
-    with pytest.raises(TransformerRegistrationError, match='Duplicate @transformer registration'):
-        query_router.transformer(transform_value)
-
-
 def test_async_query_handler_registers(query_router) -> None:
     """`async def` handlers register fine — they are bridged at fetch time via afetch."""
 
@@ -126,11 +108,3 @@ def test_async_query_handler_registers(query_router) -> None:
         return _PlainResult(value=query_args.key)
 
     assert fetch_plain in query_router._query_func_annotations_registry
-
-
-def test_async_transformer_registers(query_router) -> None:
-    @query_router.transformer
-    async def transform_value(value: str) -> str:
-        return value
-
-    assert transform_value in query_router._transformer_func_annotation_registry
