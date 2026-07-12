@@ -46,6 +46,11 @@ class FetchEntitiesQuery(Query[dict[int, Entity]]):
     ids: frozenset[int]
 
 
+class FetchTenantEntitiesQuery(Query[dict[int, Entity]]):
+    ids: frozenset[int]
+    tenant_id: int
+
+
 # ---------------------------------------------------------------------------
 # fetch() — call-level caching
 # ---------------------------------------------------------------------------
@@ -217,6 +222,48 @@ def test_fetch_absent_id_becomes_present_in_new_executor(app, query_executor) ->
 
     # Assert
     assert len(call_args) == 2
+
+
+def test_fetch_entity_discriminating_field_does_not_share_bucket(app, query_executor) -> None:
+    """An entity query with a field beyond its ids (e.g. ``tenant_id``) must not
+    cross-serve cached entries between different values of that field."""
+    # Arrange — the backend tags each entity with the tenant it was fetched for.
+    seen: list[tuple[int, frozenset[int]]] = []
+
+    @app.queries
+    def fetch_tenant_entities(query_args: FetchTenantEntitiesQuery) -> dict[int, Entity]:
+        seen.append((query_args.tenant_id, query_args.ids))
+        return {i: Entity(value=f't{query_args.tenant_id}:{i}') for i in query_args.ids}
+
+    # Act — same ids, different tenants, within one request/executor.
+    tenant_1 = query_executor.fetch(FetchTenantEntitiesQuery(ids=frozenset({1, 2}), tenant_id=1))
+    tenant_2 = query_executor.fetch(FetchTenantEntitiesQuery(ids=frozenset({1, 2}), tenant_id=2))
+
+    # Assert — each tenant is fetched independently and gets its own entities.
+    assert tenant_1 == {1: Entity(value='t1:1'), 2: Entity(value='t1:2')}
+    assert tenant_2 == {1: Entity(value='t2:1'), 2: Entity(value='t2:2')}
+    assert seen == [(1, frozenset({1, 2})), (2, frozenset({1, 2}))]
+
+
+def test_fetch_entity_same_discriminating_field_shares_bucket(app, query_executor) -> None:
+    """Within the same discriminating value, overlapping id sets still share the
+    entity cache — only missing ids are fetched."""
+    # Arrange
+    spy = MagicMock(side_effect=lambda tenant_id, ids: {i: Entity(value=f't{tenant_id}:{i}') for i in ids})
+
+    @app.queries
+    def fetch_tenant_entities(query_args: FetchTenantEntitiesQuery) -> dict[int, Entity]:
+        return spy(tenant_id=query_args.tenant_id, ids=query_args.ids)
+
+    query_executor.fetch(FetchTenantEntitiesQuery(ids=frozenset({1, 2, 3}), tenant_id=1))
+    spy.reset_mock()
+
+    # Act — same tenant, overlapping ids.
+    result = query_executor.fetch(FetchTenantEntitiesQuery(ids=frozenset({2, 3, 4}), tenant_id=1))
+
+    # Assert — only the new id 4 hits the backend.
+    assert set(result.keys()) == {2, 3, 4}
+    spy.assert_called_once_with(tenant_id=1, ids=frozenset({4}))
 
 
 def test_query_executor_has_empty_signature() -> None:

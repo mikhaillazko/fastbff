@@ -163,7 +163,12 @@ class QueryExecutor:
                 ids_value = getattr(query_obj, ids_field, None)
                 if isinstance(ids_value, Iterable) and not isinstance(ids_value, (str, bytes)):
                     ids = frozenset(ids_value)
-                    bucket_key = self._cache.build_key(handler, {}, annotation.dict_value_type)
+                    # The entity bucket must be keyed by everything on the query
+                    # *except* the ids field — otherwise two queries that differ
+                    # only in a discriminating field (e.g. ``tenant_id``) but share
+                    # ids would collide in one bucket and cross-serve entries.
+                    discriminators = {name: value for name, value in dict(query_obj).items() if name != ids_field}
+                    bucket_key = self._cache.build_key(handler, discriminators, annotation.dict_value_type)
                     result = self._cache.get_or_fetch_entities(
                         bucket_key,
                         ids,
