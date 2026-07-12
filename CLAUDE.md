@@ -37,60 +37,59 @@ CI matrix runs Python 3.12, 3.13, 3.14. The local pin is in `.python-version`.
 
 ## Architecture
 
-`fastbff` is a declarative BFF layer that composes Pydantic response models out of independently registered "queries" and "transformers", with FastAPI-native dependency injection and automatic N+1 avoidance. The big idea: a Pydantic field's `Annotated[...]` metadata declares *how* to populate it; the framework handles batching, caching, and DI.
+`fastbff` is a declarative BFF layer that composes Pydantic response models out of independently registered "queries", with FastAPI-native dependency injection and automatic N+1 avoidance. The big idea: a Pydantic field's `Annotated[..., Resolve(...)]` metadata declares *how* to populate a relation; the framework handles batching, caching, and DI. The executor core is **async-native** (ADR 0002; see `docs/adr/0002-async-core-and-resolve-phase.md`).
 
 ### Composition root: `FastBFF` + `QueryRouter`
 
-- `QueryRouter` (`fastbff/router.py`) is a pure registry — it collects `@router.queries` and `@router.transformer` callables with their `QueryAnnotation` / `TransformerAnnotation` metadata. No DI wiring.
-- `FastBFF` (`fastbff/app.py`) owns a single internal `QueryRouter`, the `query_type → QueryAnnotation` index, and the FastAPI `dependency_overrides` map. `app.include_router(router)` merges a router's registrations into the app and raises `QueryRegistrationError` on duplicates.
-- `FastBFF.finalize()` (called implicitly by `mount`) walks every registered handler, dedups their `Annotated[..., Depends(...)]` params, and synthesises a `provide_query_executor(**deps)` factory whose `__signature__` declares those deps as keyword-only parameters. FastAPI's `get_dependant` reads `__signature__`, so the synthetic factory plugs straight into FastAPI's resolver.
-- `app.mount(fastapi_app)` copies `dependency_overrides` (including `QueryExecutor → provide_query_executor`) into the user-owned FastAPI app. Endpoints then declare `Annotated[QueryExecutor, Depends(QueryExecutor)]` and FastAPI resolves a fresh executor per request.
+- `QueryRouter` (`fastbff/router.py`) is a pure registry — it collects `@router.queries` callables with their `QueryAnnotation` metadata. No DI wiring. There is no transformer decorator; composition is declared with `Resolve` fields (below).
+- `FastBFF` (`fastbff/app.py`) owns a single internal `QueryRouter`, the `query_type → QueryAnnotation` index, and the FastAPI `dependency_overrides` map. `app.include_router(router)` merges a router's registrations and raises `QueryRegistrationError` on duplicates.
+- `FastBFF.finalize()` (called implicitly by `mount`) walks every registered query handler **and every resolver discovered from the queries' response models** (`_discover_resolvers` → `iter_resolves`), dedups their `Annotated[..., Depends(...)]` params, and synthesises a `provide_query_executor(**deps)` factory whose `__signature__` declares those deps as keyword-only parameters. FastAPI's `get_dependant` reads `__signature__`, so the synthetic factory plugs straight into FastAPI's resolver. `_validate_resolve_targets` fails at finalize if a `Resolve(QueryType)` points at a non-`EntityQuery`.
+- `app.mount(fastapi_app)` copies `dependency_overrides` into the user-owned FastAPI app: `QueryExecutor → provide_query_executor` (async endpoints) **and** `SyncQueryExecutor → provide_sync_query_executor` (sync endpoints, which wraps the resolved `QueryExecutor`). Endpoints declare `Annotated[QueryExecutor, Depends(QueryExecutor)]` or `Annotated[SyncQueryExecutor, Depends(SyncQueryExecutor)]`.
 - Any registration call invalidates the finalised factory (`_invalidate_finalize`); finalize is idempotent and re-runs only when the handler set changes.
 
 ### `QueryExecutor` and the two cache layers
 
-`QueryExecutor` (`fastbff/query_executor/query_executor.py`) is per-request and holds:
+`QueryExecutor` (`fastbff/query_executor/query_executor.py`) is per-request, **async-native**, and holds:
 
 1. The shared `query_type → QueryAnnotation` index from the app.
 2. A `resolved_deps` dict — the kwargs FastAPI resolved for `provide_query_executor`.
 3. A `handler_index[func][arg_name] → synthetic_name | QUERY_EXECUTOR_SENTINEL` mapping.
 
-`fetch(query_obj)` looks up the registered handler, calls `deps_for(handler)` to build its kwargs from the resolved-deps map (substituting `self` wherever `QUERY_EXECUTOR_SENTINEL` appears), then dispatches through `QueryCache`:
+`async def fetch(query_obj)` looks up the registered handler, calls `deps_for(handler)` to build its kwargs (substituting `self` wherever `QUERY_EXECUTOR_SENTINEL` appears), invokes the handler via `_call` (async handlers awaited on the loop; sync handlers offloaded to one anyio worker thread via `anyio.to_thread.run_sync`), then dispatches through `QueryCache`:
 
-- **Call-level cache** for plain return types (key = handler + args).
-- **Entity-level cache** for `dict[K, V]`-returning queries that have an `Iterable[K]` field on their `Query` subclass. Overlapping ID sets share cached entries, only missing IDs are fetched from the underlying handler. Absences are remembered, so re-asking does not re-hit the backend.
+- **Call-level cache** for plain `Query[T]` return types (key = handler + args). Concurrent identical fetches share one in-flight `asyncio.Future` (`get_or_call`), so a backend call runs at most once per key.
+- **Entity-level cache** for `EntityQuery[K, V]` — a `Query[dict[K, V]]` subclass with an ids field. Overlapping ID sets share cached entries, only missing IDs are fetched; absences are remembered. Entity caching is **explicit opt-in** (an `EntityQuery` subclass), never inferred from a `dict` return shape.
 
-`QueryExecutor.__init__` is parameterless so that `inspect.signature(QueryExecutor)` is naturally empty: when an endpoint declares `Depends(QueryExecutor)`, FastAPI's `get_dependant` finds no `__init__` params to treat as request params. The override to `provide_query_executor` fires at solve time and supplies the real instance. Build a populated executor (in tests, the factory) via `QueryExecutor.create(query_annotations, ...)`.
+When a query's result model (`Query[T].T`) declares `Resolve` fields, `fetch` runs the render pipeline (`annotation.render_target` → `apply_render`) after the handler returns.
 
-#### Async handlers/transformers (the anyio worker-thread bridge)
+`QueryExecutor.__init__` is parameterless so `inspect.signature(QueryExecutor)` is naturally empty: `Depends(QueryExecutor)` presents no request params, and the mount-time override supplies the real instance. Build a populated executor via `QueryExecutor.create(query_annotations, ...)`.
 
-`async def` handlers and transformers are supported. The wrinkle is that transformers run as **synchronous** Pydantic validators (`with_info_plain_validator_function`), so the transformer-driven N+1 fetch — the place you'd most want async I/O — cannot `await` in place. fastbff bridges using the same primitive Starlette uses for sync endpoints, so it rides FastAPI's existing concurrency model (one thread pool, asyncio **or** trio backend):
+#### Async model (loop-native fetch, sync facade)
 
-- **Sync endpoint (no extra code).** Starlette already runs a `def` endpoint in an anyio worker thread, so it can call `query_executor.fetch(...)` directly and async handlers still bridge — the endpoint looks identical whether handlers are sync or async.
-- **Async endpoint.** Use `await query_executor.afetch(query)`. It dispatches on the target handler's kind (`QueryExecutor.afetch`):
-  - **Async handler** → `_afetch_async` awaits it (and any nested `afetch` of other async handlers) **directly on the loop**, consuming no worker thread. Only the synchronous transformer-validate step (`apply_auto_wrap` → `validate_batch`) is offloaded to a single worker thread via `anyio.to_thread.run_sync`, where sync transformers bridge their own async sub-fetches back to the loop. This is what keeps async *composition* (an async handler that `await`s `afetch` of another async handler) from consuming a worker thread per level and deadlocking the bounded pool.
-  - **Sync handler** → the whole synchronous subtree runs on one worker thread via `anyio.to_thread.run_sync(self.fetch, query)`, exactly like `fetch`. Confining it to one thread preserves thread affinity for request-scoped resources (e.g. a DB session shared across handlers via FastAPI `Depends`), and sync composition never nests worker threads.
-- Every *bridged* handler/transformer call goes through `QueryExecutor.call_handler`: sync callables run inline (in the worker thread); for an `async def` callable it submits the coroutine to the host loop with `anyio.from_thread.run(...)`, blocking the *worker* thread — never the loop. `TransformerAnnotation._validate` dispatches through `call_handler` too, so async transformers bridge the same way. (The loop-native `_afetch_async` path awaits async handlers directly and does not go through `call_handler`.)
-- `call_handler` also guards against an async callable that slips past `iscoroutinefunction` (e.g. an `async def __call__` object): if the sync branch returns a coroutine it is closed and `AsyncDispatchError` is raised rather than caching an unawaited coroutine.
-- Two cases can't be bridged and raise `AsyncDispatchError` (never a bare coroutine): a purely synchronous `fetch` reaching an async handler (no worker-thread portal), and an async handler calling sync `fetch` from the loop thread (would self-deadlock — use `await afetch(...)` there). A `RuntimeError` raised by the coroutine *itself* is distinguished from a bridging failure by the `bridged` flag in `call_handler` and re-raised unchanged.
-- `QueryCache` is lock-guarded (compute-outside-lock) so concurrent fetches on parallel worker threads are safe; `afetch`'s loop-native path uses async cache twins (`aget_or_call`, `aget_or_fetch_entities`) that await the fetcher outside the lock, so the lock is never held across an `await` or a bridge.
+`fetch` is a coroutine and runs on the event loop:
 
-### `validate_batch` + `BatchArg` + `TransformerAnnotation`
+- **Async endpoint.** `await query_executor.fetch(query)`. Async handlers/resolvers are awaited directly on the loop (no worker thread), so async composition (a resolver that `await`s `fetch` of another query) never consumes a worker thread per level or deadlocks the bounded pool.
+- **Sync endpoint.** Inject `SyncQueryExecutor` and call `sync_query_executor.fetch(query)`. Starlette runs the sync endpoint in an anyio worker thread; `SyncQueryExecutor.fetch` bridges onto the loop via `anyio.from_thread.run`, then the async core takes over. Cost: one loop round-trip per top-level `fetch`.
+- `QueryExecutor._call` bridges the two thread contexts: `async def` callables are awaited on the loop; plain `def` callables are offloaded to a single anyio worker thread via `anyio.to_thread.run_sync`, preserving thread affinity for whatever request-scoped resource (e.g. a DB session) they touch.
+- `QueryCache` is loop-native — every method is a coroutine and all mutations happen between `await` points, so no thread lock is needed. Call-level dedup uses a per-key `asyncio.Future`; entity fetches serialise per bucket with an `asyncio.Lock` (held across the awaited fetch — safe, cooperative, not a thread lock).
 
-`validate_batch(Model, rows, query_executor=...)` (`fastbff/batch.py`) is the two-phase orchestrator for a page of rows:
+### The `Resolve` pipeline (`fastbff/resolve.py`)
 
-- **Phase 1 — Plan.** `populate_context_with_batch` walks rows once and collects every unique id per `BatchArg`-aware transformer field into a `{batch_key: set[ids]}` validation context, then injects the `query_executor` into that context.
-- **Phase 2 — Merge.** `Model.model_validate(row, context=ctx)` for each row. `TransformerAnnotation.__get_pydantic_core_schema__` registers a `with_info_plain_validator_function` so each transformer runs as a Pydantic validator. The first row's `query_executor.fetch(...)` issues the bulk call; subsequent rows hit the entity-level cache.
+`Resolve` is inert Pydantic metadata (no core schema) placed in `Annotated[T, Resolve(...)]`. Two forms: `Resolve(SomeEntityQuery)` (the raw row value is a key into the entity query's `dict[K, V]`) or `Resolve(resolver=fn)` (a batch-first `(ids, *deps) -> dict[key, value]` callable; the executor is injected by type, `Depends(...)` params via `handler_index`). `render(model, rows, executor)` is the three-phase orchestrator for a page of rows:
 
-`build_transform_annotated(func)` returns `Annotated[ReturnType, transformer_annotation]` so the same transformer can be reused as a field type across multiple Pydantic models. The function is left unchanged and remains directly callable in tests; `transformer_metadata` recovers the `TransformerAnnotation` from either a decorated function or an annotated field alias.
+- **Phase 1 — Plan.** Walk rows once, collecting the id-set per `Resolve` field (`get_resolve_fields`) and any nested resolve-bearing model fields (`get_nested_fields`), both cached on the model class.
+- **Phase 2 — Fetch.** One bulk call per field, **all fields concurrent** via `asyncio.gather` (`_render_resolve` calls `executor.resolve_ids`; nested fields re-enter `render` as their own batch — depth-first, one bulk fetch per field per level).
+- **Phase 3 — Merge.** Substitute resolved values into each row, then `model_validate(row)` — context-free and side-effect-free, so DTOs validate anywhere.
+
+`classify_render(Query[T].T)` decides `('list'|'single', Model) | None` (cached lazily on `QueryAnnotation.render_target`, since a forward-referenced model may not be built when the decorator fires).
 
 ### Query type metadata (`QueryAnnotation`)
 
-`QueryAnnotation` (`fastbff/query_executor/query_annotation.py`) is computed once per `@queries` registration. It detects the `Query[T]` parameter (or accepts an explicit `@queries(SomeQueryType)` form for parameterless handlers), validates the return type matches `Query[T]`, and pre-computes `dict[K, V]` metadata + the IDs field name so `QueryExecutor.fetch` can route into the entity-level cache without re-reflecting at runtime.
+`QueryAnnotation` (`fastbff/query_executor/query_annotation.py`) is computed once per `@queries` registration. It detects the `Query[T]` parameter (or accepts an explicit `@queries(SomeQueryType)` form for parameterless handlers), validates the return type, and — for `EntityQuery` subclasses — pre-computes the key/value types and the ids field name (`_find_ids_field`, preferring a field named `ids`) so `fetch` routes into the entity cache without re-reflecting at runtime.
 
 ### Errors
 
-All errors subclass `FastBFFError` (`fastbff/exceptions.py`). The most common ones surface at registration / include time, not at request time — `QueryRegistrationError` for bad `@queries` declarations and duplicates, `TransformerRegistrationError` for bad `@transformer` declarations, `BatchContextMissingError` when a `BatchArg` transformer is invoked outside `validate_batch`.
+All errors subclass `FastBFFError` (`fastbff/exceptions.py`). The most common ones surface at registration / finalize time, not at request time — `QueryRegistrationError` for bad `@queries` declarations, duplicates, and an `EntityQuery` with no discoverable ids field; `ResolveRegistrationError` for a mis-declared `Resolve` field (neither/both args, or a `Resolve(QueryType)` targeting a non-`EntityQuery`). `QueryNotRegisteredError` and `CacheKeyError` surface at request time.
 
 ## Conventions
 

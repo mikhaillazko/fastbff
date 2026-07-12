@@ -12,10 +12,11 @@ Completed items have been removed; check `git log` for the fix details.
 
 ## P0 — credibility blockers (a new user gives up in 30 seconds)
 
-Async handlers/transformers (was #1, "silent corruption") shipped as native
-support in 0.2.0 — see `git log` and the async notes in `CLAUDE.md`.
-**Open follow-up**: greater inter-query concurrency in the transformer path
-(today each transformer's bulk fetch bridges one at a time).
+Async handlers (was #1, "silent corruption") shipped in 0.2.0 and were then
+reworked in **0.3.0** into an async-native core with an explicit `Resolve`
+render pipeline (ADR 0002; `docs/adr/0002-async-core-and-resolve-phase.md`).
+The old inter-query-concurrency follow-up is closed — independent `Resolve`
+fields now fetch concurrently via `asyncio.gather` in `fastbff/resolve.py`.
 
 ### 2. DI integration leans on FastAPI internals and signature-mutation hacks
 
