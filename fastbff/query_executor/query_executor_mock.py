@@ -27,5 +27,14 @@ class QueryExecutorMock(QueryExecutor):
             return cast(T, result)
         return super().fetch(query_obj)
 
+    async def afetch[T](self, query_obj: Query[T]) -> T:
+        # Honour stubs on the async path too — the base ``afetch`` dispatches an
+        # async handler to ``_afetch_async`` (bypassing ``fetch``), so the stub
+        # check must live here rather than relying on the ``fetch`` override.
+        result = self._query_stubs.get(type(query_obj), MISSING)
+        if result is not MISSING:
+            return cast(T, result)
+        return await super().afetch(query_obj)
+
     def reset_mock(self) -> None:
         self._query_stubs.clear()

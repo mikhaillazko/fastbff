@@ -1,5 +1,6 @@
 """Tests for ``QueryExecutorMock`` — stub/reset semantics."""
 
+import asyncio
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
@@ -27,6 +28,30 @@ def test_mock_stub_query_returns_stubbed_value(app) -> None:
 
     # Assert
     assert result is expected
+
+
+def test_mock_afetch_honours_stub_over_async_handler(app) -> None:
+    """A stubbed query short-circuits ``afetch`` even when the real handler is
+    async — the async path dispatches to ``_afetch_async`` (bypassing ``fetch``),
+    so the mock must guard ``afetch`` too."""
+    calls = 0
+
+    @app.queries
+    async def fetch_plain(query_args: FetchPlainQuery) -> PlainResult:
+        nonlocal calls
+        calls += 1
+        return PlainResult(value=query_args.key)
+
+    mock = QueryExecutorMock.create(query_annotations=app.query_annotations)
+    stub = PlainResult(value='stubbed')
+    mock.stub_query(FetchPlainQuery, stub)
+
+    # Act
+    result = asyncio.run(mock.afetch(FetchPlainQuery(key='real')))
+
+    # Assert
+    assert result is stub
+    assert calls == 0
 
 
 def test_mock_reset_clears_query_stubs(app) -> None:

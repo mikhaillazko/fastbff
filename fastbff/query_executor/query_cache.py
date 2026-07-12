@@ -1,4 +1,5 @@
 import threading
+from collections.abc import Awaitable
 from collections.abc import Callable
 from dataclasses import asdict
 from dataclasses import is_dataclass
@@ -49,6 +50,20 @@ class QueryCache:
         with self._lock:
             return self._call_cache.setdefault(key, result)
 
+    async def aget_or_call(self, key: tuple, fetcher: Callable[[], Awaitable[Any]]) -> Any:
+        """Async twin of :meth:`get_or_call` — the fetcher is awaited on the loop.
+
+        The lock is never held across the ``await`` (compute-outside-lock), so a
+        worker thread touching the cache concurrently cannot deadlock against the
+        loop, and the awaited fetcher can run further loop-native work.
+        """
+        with self._lock:
+            if key in self._call_cache:
+                return self._call_cache[key]
+        result = await fetcher()
+        with self._lock:
+            return self._call_cache.setdefault(key, result)
+
     def get_or_fetch_entities(
         self,
         bucket_key: tuple,
@@ -61,6 +76,30 @@ class QueryCache:
             missing = frozenset(ids - entity_map.keys())
         if missing:
             fetched = fetcher(missing)
+            with self._lock:
+                for key, value in fetched.items():
+                    entity_map.setdefault(key, value)
+                for id_ in missing:
+                    entity_map.setdefault(id_, MISSING)  # Mark as "checked but absent"
+        with self._lock:
+            return {id_: entity_map[id_] for id_ in ids if entity_map.get(id_, MISSING) is not MISSING}
+
+    async def aget_or_fetch_entities(
+        self,
+        bucket_key: tuple,
+        ids: frozenset[Any],
+        fetcher: Callable[[frozenset[Any]], Awaitable[dict[Any, Any]]],
+    ) -> dict[Any, Any]:
+        """Async twin of :meth:`get_or_fetch_entities` — the fetcher is awaited.
+
+        Same compute-outside-lock discipline: the lock is only held for the
+        (synchronous) dict reads and merges, never across the awaited fetch.
+        """
+        with self._lock:
+            entity_map = self._entity_cache.setdefault(bucket_key, {})
+            missing = frozenset(ids - entity_map.keys())
+        if missing:
+            fetched = await fetcher(missing)
             with self._lock:
                 for key, value in fetched.items():
                     entity_map.setdefault(key, value)

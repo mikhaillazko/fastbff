@@ -179,6 +179,45 @@ def test_afetch_async_transformer() -> None:
     assert [row.owner for row in results] == [_User(id=10), _User(id=20)]
 
 
+def test_afetch_async_handler_composition_does_not_exhaust_pool() -> None:
+    """Async handlers that compose via nested ``afetch`` must run on the loop, not
+    each grab a worker thread — otherwise deep composition deadlocks a small pool.
+
+    The pool is shrunk to a single token, far below the composition depth: the
+    loop-native path uses no worker threads and completes, whereas the old
+    offload-per-level path would exhaust the pool and hang (caught by the
+    ``fail_after`` deadline)."""
+    app = FastBFF()
+
+    class Leaf(Query[PlainResult]):
+        n: int
+
+    class Chain(Query[PlainResult]):
+        depth: int
+
+    @app.queries
+    async def leaf(query_args: Leaf) -> PlainResult:
+        return PlainResult(value=f'leaf:{query_args.n}')
+
+    @app.queries
+    async def chain(
+        query_args: Chain,
+        executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+    ) -> PlainResult:
+        if query_args.depth == 0:
+            return await executor.afetch(Leaf(n=0))
+        return await executor.afetch(Chain(depth=query_args.depth - 1))
+
+    query_executor = app.finalize()()
+
+    async def scenario() -> PlainResult:
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 1
+        with anyio.fail_after(5):
+            return await query_executor.afetch(Chain(depth=8))
+
+    assert asyncio.run(scenario()) == PlainResult(value='leaf:0')
+
+
 def test_call_handler_rejects_undetected_coroutine(query_executor) -> None:
     """A callable that hides an ``async`` body from ``iscoroutinefunction`` (so it
     runs down the sync branch but returns a coroutine) must fail loudly rather

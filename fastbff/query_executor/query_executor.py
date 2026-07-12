@@ -147,16 +147,82 @@ class QueryExecutor:
     async def afetch[T](self, query_obj: Query[T]) -> T:
         """Async entry point for :meth:`fetch` that supports ``async def`` handlers.
 
-        Runs the (synchronous) :meth:`fetch` machinery on a worker thread via
-        :func:`anyio.to_thread.run_sync`; any ``async def`` handler or
-        transformer reached during that fetch is bridged back onto the loop by
-        :meth:`call_handler`. Use this from ``async def`` FastAPI endpoints.
+        Dispatches on the target handler's kind so async composition never
+        exhausts the worker-thread pool:
 
-        A **sync** endpoint does not need this — Starlette already runs sync
-        endpoints in a worker thread, so it can call :meth:`fetch` directly and
-        async handlers still bridge.
+        - **Async handler** — the handler, and any nested ``afetch`` of other
+          async handlers, is awaited **directly on the loop**, consuming no
+          worker thread. Only the synchronous transformer-validate step (Pydantic
+          validators that cannot ``await`` in place) is offloaded to a single
+          worker thread, which bridges its own async sub-fetches back to the loop.
+        - **Sync handler** — the whole synchronous fetch subtree runs on one
+          worker thread via :func:`anyio.to_thread.run_sync`, exactly as
+          :meth:`fetch` does. Confining it to one thread preserves thread affinity
+          for request-scoped resources (e.g. a DB session shared across handlers),
+          and sync composition never nests worker threads.
+
+        Use this from ``async def`` FastAPI endpoints. A **sync** endpoint does
+        not need it — Starlette already runs sync endpoints in a worker thread,
+        so it can call :meth:`fetch` directly and async handlers still bridge.
         """
+        annotation = self._query_annotations.get(type(query_obj))
+        if annotation is None:
+            raise QueryNotRegisteredError(f'No @query registered for query object {type(query_obj)}')
+        if iscoroutinefunction(annotation.original_func):
+            return await self._afetch_async(query_obj, annotation)
         return await anyio.to_thread.run_sync(self.fetch, query_obj)
+
+    async def _afetch_async[T](self, query_obj: Query[T], annotation: QueryAnnotation) -> T:
+        """Loop-native fetch for an ``async def`` handler (see :meth:`afetch`).
+
+        Mirrors :meth:`fetch` but awaits the async handler on the loop and uses
+        the async cache twins, so caching and the single-bulk-fetch contract
+        still hold. Only transformer-driven validation is offloaded to one worker
+        thread via :func:`apply_auto_wrap`, where sync transformers bridge their
+        own async sub-fetches back to the loop.
+        """
+        from fastbff.batch import apply_auto_wrap
+
+        handler = annotation.original_func
+        extra_kwargs = self.deps_for(handler)
+        query_param_name = annotation.query_param_name
+        query_kwargs = {query_param_name: query_obj} if query_param_name is not None else {}
+
+        if annotation.dict_type_key is not None and query_param_name is not None:
+            ids_field = annotation.ids_param_name
+            if ids_field is not None:
+                ids_value = getattr(query_obj, ids_field, None)
+                if isinstance(ids_value, Iterable) and not isinstance(ids_value, (str, bytes)):
+                    ids = frozenset(ids_value)
+                    discriminators = {name: value for name, value in dict(query_obj).items() if name != ids_field}
+                    bucket_key = self._cache.build_key(handler, discriminators, annotation.dict_value_type)
+
+                    async def entity_fetcher(missing: frozenset[Any]) -> dict[Any, Any]:
+                        return await handler(
+                            **{query_param_name: query_obj.model_copy(update={ids_field: missing})},
+                            **extra_kwargs,
+                        )
+
+                    result = await self._cache.aget_or_fetch_entities(bucket_key, ids, entity_fetcher)
+                    return result  # type: ignore[return-value]
+
+        cache_key = self._cache.build_key(
+            handler,
+            dict(query_obj),
+            annotation.dict_value_type if annotation.dict_type_key is not None else None,
+        )
+        wrap_info = annotation.auto_wrap
+
+        async def call_fetcher() -> Any:
+            result = await handler(**query_kwargs, **extra_kwargs)
+            if wrap_info is not None:
+                # Transformers are synchronous Pydantic validators — run the
+                # validate step on one worker thread so they can bridge their own
+                # async sub-fetches back onto the loop via ``call_handler``.
+                return await anyio.to_thread.run_sync(apply_auto_wrap, result, wrap_info, self)
+            return result
+
+        return await self._cache.aget_or_call(cache_key, call_fetcher)
 
     def fetch[T](self, query_obj: Query[T]) -> T:
         # Late import — fastbff.batch depends on QueryExecutor; importing it
