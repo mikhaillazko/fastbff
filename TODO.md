@@ -18,7 +18,7 @@ render pipeline (ADR 0002; `docs/adr/0002-async-core-and-resolve-phase.md`).
 The old inter-query-concurrency follow-up is closed — independent `Resolve`
 fields now fetch concurrently via `asyncio.gather` in `fastbff/resolve.py`.
 
-### 2. DI integration leans on FastAPI internals and signature-mutation hacks
+### 2. DI integration — correctness fixes complete; endpoint scoping remains optional
 
 The injection plumbing used to hand-edit Python's introspection metadata
 in two places to make `Depends(...)` work the way we want. See
@@ -27,13 +27,13 @@ in two places to make `Depends(...)` work the way we want. See
 Sites:
 
 - ~~`QueryExecutor.__signature__ = Signature(parameters=[])`~~ —
-  **resolved** (Option F). `QueryExecutor.__init__` is now
+  **resolved**. `QueryExecutor.__init__` is now
   parameterless, so `inspect.signature(QueryExecutor)` is naturally
   empty; no `__init__` params leak in when an endpoint declares
   `Depends(QueryExecutor)`. Populated executors are built via
   `QueryExecutor.create(...)`. Guarded by
-  `test_query_executor_has_empty_signature`.
-- `fastbff/di.py:150` —
+  `test_executors_have_empty_signature`.
+- `fastbff/di.py:build_provide_query_executor` (and the sync facade provider) —
   `provide_query_executor.__signature__ = Signature(parameters=...)`.
   Synthesises a function signature listing the union of every
   registered handler's deps so FastAPI resolves them all at once.
@@ -43,33 +43,27 @@ Sites:
   — the only thing FastAPI reads — honors it by spec, so this is not
   coupling to FastAPI internals.
 
-**Remaining options** (none required for the surface concern, which the
-one legitimate `__signature__` line above does not represent):
+Each dependency occurrence now retains its original declaration; FastAPI owns
+caching, implicit factories, security scopes, and yield lifetimes. Regression
+tests live in `fastbff/di_test.py`. ADR 0001 records the accepted decision and a
+review of FastAPI 0.143.0's injection implementation.
 
-- **Own the DI graph** (ADR Option C). Walk registered handlers and
-  resolve `Depends(...)` ourselves. Zero version coupling, but a
-  non-trivial rewrite for a benefit that has not bitten us.
-- **`QueryExecutor[Q1, ...]` per-endpoint scoping** (ADR Option D).
-  The only option that improves something users feel (per-endpoint
-  resolution cost); prototype with explicit listing before committing.
+**Remaining options** (none required for the signature-generation concern):
+
+- **Per-endpoint scoping** (revised ADR Option D). Prototype a direct provider
+  such as `Depends(app.executor_for(Q1, Q2))` with explicit query roots. Compare
+  dependency isolation, request cost, and OpenAPI output before committing.
+- **Own the DI graph** (ADR Option C). Defer unless a concrete non-HTTP use case
+  justifies owning dependency caching, request injection, and resource lifetimes.
 
 ---
 
 ## P1 — silent footguns
 
-### 3. `bind()` after `mount()` does not propagate
-
-`FastBFF.mount` (`fastbff/app.py:237`) does
-`fastapi_app.dependency_overrides.update(self._overrides)` (line 245) — a
-one-shot copy. Subsequent `app.bind(...)` (`fastbff/app.py:124`) calls write
-to `self._overrides` only.
-Users (especially in tests) expect post-mount binds to take effect.
-
-**Fix options**:
-- Have `mount` make `fastapi_app.dependency_overrides` and `self._overrides`
-  the same dict (assignment-in-place via `clear() + update()` is risky;
-  prefer rewriting `bind` to write to both if mounted).
-- Or document loudly + raise on `bind` after `mount`.
+`bind()` propagation and executor-override precedence are fixed. Bindings update
+every mounted app; finalization preserves explicit overrides. Later registrations
+require remounting each host, while existing providers retain consistent snapshots.
+See `fastbff/app_test.py` and the README's dependency-injection section.
 
 ---
 
@@ -110,4 +104,3 @@ test per row:
 - ~~Async handler / async transformer.~~ — supported + covered by
   `query_executor_test.py`.
 - `validate_batch` over a large page (sanity / performance smoke).
-- `bind()` called after `mount()` (whatever the chosen semantics).

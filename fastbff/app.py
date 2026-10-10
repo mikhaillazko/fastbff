@@ -15,6 +15,7 @@ from types import MappingProxyType
 from typing import Annotated
 from typing import Any
 from typing import get_origin
+from weakref import WeakSet
 
 from fastapi import Depends
 
@@ -43,7 +44,8 @@ class FastBFF:
     2. Call :meth:`finalize` (implicitly via :meth:`mount`) to synthesize the
        ``provide_query_executor`` factory from the union of all registered query
        and discovered resolver deps. Re-finalize is supported; the factory is
-       rebuilt if new handlers were added.
+       rebuilt if new handlers were added. Mount again on each FastAPI app
+       to install the new graph; existing providers keep their old snapshot.
 
     Async endpoints declare ``Annotated[QueryExecutor, Depends(QueryExecutor)]``
     and ``await query_executor.fetch(...)``; sync endpoints declare
@@ -56,12 +58,18 @@ class FastBFF:
         self._router = QueryRouter()
         self._query_annotations: dict[type, QueryAnnotation] = {}
         self._overrides: dict[Callable, Callable] = {}
+        self._generated_overrides: dict[Callable, Callable] = {}
+        self._mounted_apps: WeakSet[Any] = WeakSet()
         self._provide_query_executor: Callable | None = None
         self._finalized_for: tuple[int, ...] | None = None
 
     @property
     def dependency_overrides(self) -> dict[Callable, Callable]:
-        """Compatible with FastAPI's ``dependency_overrides_provider`` protocol."""
+        """Compatible with FastAPI's ``dependency_overrides_provider`` protocol.
+
+        Direct edits are local until the next mount. Use :meth:`bind` to also
+        update applications that have already been mounted.
+        """
         return self._overrides
 
     @property
@@ -117,9 +125,16 @@ class FastBFF:
         return self._router
 
     def bind(self, target: Any, factory: Callable[..., Any]) -> None:
-        """Add an override to ``self.dependency_overrides`` (FastAPI-compatible)."""
+        """Override a dependency here and on every mounted FastAPI application.
+
+        Explicit overrides take precedence over generated executor providers.
+        Changes apply to subsequent dependency resolution, not values already
+        resolved by an in-flight request.
+        """
         key = target.__origin__ if get_origin(target) is Annotated else target
         self._overrides[key] = factory
+        for app in self._mounted_apps:
+            app.dependency_overrides[key] = factory
 
     def get_annotation_by_query_type(self, query_type: type) -> QueryAnnotation:
         annotation = self._query_annotations.get(query_type)
@@ -204,8 +219,9 @@ class FastBFF:
         """Synthesize ``provide_query_executor`` from the current registrations.
 
         Idempotent — caches the result until a new handler is registered. Also
-        installs the ``QueryExecutor`` and ``SyncQueryExecutor`` overrides in
-        :attr:`dependency_overrides`.
+        installs default ``QueryExecutor`` and ``SyncQueryExecutor`` overrides
+        in :attr:`dependency_overrides`, preserving explicit overrides. Mount
+        again to install a rebuilt graph on an existing FastAPI application.
         """
         query_handlers = list(self._router._query_func_annotations_registry.keys())
         resolvers = self._discover_resolvers()
@@ -220,23 +236,36 @@ class FastBFF:
             handlers,
             query_executor_type=QueryExecutor,
         )
+        query_annotations = self._query_annotations.copy()
         provide = build_provide_query_executor(
             specs=specs,
             handler_index=handler_index,
-            query_annotations_factory=lambda: self._query_annotations,
+            query_annotations_factory=lambda: query_annotations,
             query_executor_factory=QueryExecutor.create,
         )
         self._provide_query_executor = provide
         self._finalized_for = key
-        self._overrides[QueryExecutor] = provide
-        self._overrides[SyncQueryExecutor] = build_provide_sync_query_executor(
-            query_executor_type=QueryExecutor,
-            sync_factory=SyncQueryExecutor.create,
-        )
+        generated: dict[Callable, Callable] = {
+            QueryExecutor: provide,
+            SyncQueryExecutor: build_provide_sync_query_executor(
+                query_executor_type=QueryExecutor,
+                sync_factory=SyncQueryExecutor.create,
+            ),
+        }
+        for target, factory in generated.items():
+            # Replace our previous defaults, never a user-supplied override
+            # (including overrides written directly to dependency_overrides).
+            if target not in self._overrides or self._overrides[target] is self._generated_overrides.get(target):
+                self._overrides[target] = factory
+        self._generated_overrides = generated
         return provide
 
     def mount(self, fastapi_app: Any) -> Callable:
-        """Finalize and copy overrides into ``fastapi_app.dependency_overrides``.
+        """Install the current graph and remember the app for future binds.
+
+        Existing unrelated overrides and the FastAPI app's dictionary identity
+        are preserved. For matching keys, fastbff's overrides win. Call again
+        after adding handlers or routers to install the rebuilt graph.
 
         Returns the synthesized ``provide_query_executor`` callable so you can
         reference it directly on your endpoints if you don't want to rely on the
@@ -244,6 +273,7 @@ class FastBFF:
         """
         provide = self.finalize()
         fastapi_app.dependency_overrides.update(self._overrides)
+        self._mounted_apps.add(fastapi_app)
         return provide
 
 

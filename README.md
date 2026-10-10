@@ -302,6 +302,13 @@ factory whose signature declares the union of every handler's and resolver's
 once per request and the executor hands the resolved values to each
 handler / resolver at dispatch time.
 
+Each dependency parameter retains its own declaration. FastAPI controls
+caching, implicit `Depends()` factories, `Security` scopes, and cleanup of
+`yield` dependencies. `use_cache=False` creates a value for each dependency
+occurrence when the executor is injected; it does not re-resolve dependencies
+on every `fetch()` call. All registered handlers' dependencies are resolved,
+including those belonging to queries the endpoint does not fetch.
+
 ```python
 @app.queries
 def fetch_users(query: FetchUsers, session: DBSession) -> dict[int, User]:
@@ -310,8 +317,8 @@ def fetch_users(query: FetchUsers, session: DBSession) -> dict[int, User]:
 ```
 
 `FastBFF` is a `dependency_overrides_provider` — its
-`dependency_overrides` dict is the same one FastAPI uses. The
-`app.bind(target, factory)` helper is a thin wrapper that writes into it
+`dependency_overrides` dict follows FastAPI's override protocol. The
+`app.bind(target, factory)` helper writes into it and every mounted app's dict
 and accepts both a bare class and its `Annotated[Class, Depends(Class)]`
 alias, mapping both to the same override key:
 
@@ -320,8 +327,21 @@ app.bind(QueryExecutor, lambda: shared_executor)
 app.bind(SomeService, lambda: FakeService())
 ```
 
-Bind *before* `app.mount(fastapi_app)` — `mount` copies overrides into
-the FastAPI app's `dependency_overrides` once.
+Bind before or after `app.mount(fastapi_app)`. Explicit executor bindings survive
+`finalize()` and repeated mounts. Each FastAPI app keeps its own override dict;
+unrelated entries are preserved. For matching keys, `mount()` and `bind()` apply
+fastbff's value. To override only one host app in a test, write to that app's
+`dependency_overrides` directly. Direct edits to the fastbff dict are copied on
+the next mount; use `bind()` for immediate propagation to all mounted apps.
+
+Register handlers and include routers before mounting where possible. If you
+add registrations later, call `mount()` again on each host app to install the
+new dependency graph. Existing provider callables and their executors retain their
+original query registry snapshot, so new handlers cannot run with old dependency
+metadata. Calling `finalize()` alone does not update a mounted host. Changes to
+bindings affect subsequent resolution, not dependencies already resolved for
+an in-flight request. An endpoint that uses `Depends(provide)` directly keeps
+that particular provider; remounting updates `Depends(QueryExecutor)` endpoints.
 
 ### Module organisation
 

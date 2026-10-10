@@ -24,6 +24,7 @@ from fastbff import QueryExecutor
 from fastbff import QueryRouter
 from fastbff import Resolve
 from fastbff import SyncQueryExecutor
+from fastbff.exceptions import QueryNotRegisteredError
 from fastbff.exceptions import QueryRegistrationError
 from fastbff.exceptions import ResolveRegistrationError
 
@@ -260,7 +261,8 @@ def test_finalize_raises_when_resolve_targets_unregistered_entity_query() -> Non
         app.finalize()
 
 
-def test_bind_override_reaches_resolver_through_mount() -> None:
+@pytest.mark.parametrize('bind_after_mount', [False, True])
+def test_bind_override_reaches_resolver_through_mount(bind_after_mount: bool) -> None:
     """An ``app.bind`` override for a resolver's ``Depends`` param flows through
     ``mount`` and is picked up when the resolver runs during render."""
 
@@ -287,7 +289,8 @@ def test_bind_override_reaches_resolver_through_mount() -> None:
         pass
 
     app = FastBFF()
-    app.bind(_Greeter, lambda: _StubGreeter())
+    if not bind_after_mount:
+        app.bind(_Greeter, lambda: _StubGreeter())
 
     @app.queries(_FetchNames)
     async def fetch_names() -> list[dict[str, int]]:
@@ -303,6 +306,8 @@ def test_bind_override_reaches_resolver_through_mount() -> None:
         return {'greeting': rows[0].greeting}
 
     app.mount(fastapi_app)
+    if bind_after_mount:
+        app.bind(_Greeter, lambda: _StubGreeter())
 
     # Act
     response = TestClient(fastapi_app).get('/names')
@@ -310,3 +315,146 @@ def test_bind_override_reaches_resolver_through_mount() -> None:
     # Assert — the stub, not the concrete _Greeter, resolved the field.
     assert response.status_code == 200
     assert response.json() == {'greeting': 'stub hello n1'}
+
+
+def test_bind_updates_multiple_mounts_without_replacing_override_dictionaries() -> None:
+    class _Service:
+        pass
+
+    alias = Annotated[_Service, Depends(_Service)]
+    app = FastBFF()
+    apis = [FastAPI(), FastAPI()]
+    original_dicts = [api.dependency_overrides for api in apis]
+
+    def unrelated() -> str:
+        return 'unrelated'
+
+    for api in apis:
+        api.dependency_overrides[unrelated] = unrelated
+        app.mount(api)
+
+    def first() -> str:
+        return 'first'
+
+    def second() -> str:
+        return 'second'
+
+    app.bind(alias, first)
+    for api in apis:
+        assert api.dependency_overrides[_Service] is first
+
+    app.mount(apis[0])
+    app.bind(_Service, second)
+    for api, original in zip(apis, original_dicts, strict=True):
+        assert api.dependency_overrides is original
+        assert api.dependency_overrides[_Service] is second
+        assert api.dependency_overrides[unrelated] is unrelated
+
+
+@pytest.mark.parametrize('executor_type', [QueryExecutor, SyncQueryExecutor])
+@pytest.mark.parametrize('bind_after_finalize', [False, True])
+def test_explicit_executor_override_survives_finalize_rebuild_and_mount(executor_type, bind_after_finalize) -> None:
+    app = FastBFF()
+    replacement = executor_type()
+
+    def factory():
+        return replacement
+
+    if bind_after_finalize:
+        app.finalize()
+    app.bind(executor_type, factory)
+    app.finalize()
+
+    @app.queries
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        return {}
+
+    api = FastAPI()
+    app.mount(api)
+    app.mount(api)
+
+    @api.get('/')
+    async def endpoint(executor: Annotated[executor_type, Depends(executor_type)]) -> bool:
+        return executor is replacement
+
+    with TestClient(api) as client:
+        assert client.get('/').json() is True
+    assert app.dependency_overrides[executor_type] is factory
+    assert api.dependency_overrides[executor_type] is factory
+
+
+def test_direct_executor_override_survives_refinalization() -> None:
+    app = FastBFF()
+    app.finalize()
+
+    def replacement() -> QueryExecutor:
+        return QueryExecutor()
+
+    app.dependency_overrides[QueryExecutor] = replacement
+
+    @app.queries
+    async def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
+        return {}
+
+    app.finalize()
+    assert app.dependency_overrides[QueryExecutor] is replacement
+
+
+def test_new_registrations_require_remount_and_do_not_change_old_provider_snapshots() -> None:
+    app = FastBFF()
+    api = FastAPI()
+    old_provider = app.mount(api)
+    old_executor = old_provider()
+
+    async def greeting() -> str:
+        return 'new dependency'
+
+    class _FetchGreeting(Query[str]):
+        pass
+
+    router = QueryRouter()
+
+    @router.queries(_FetchGreeting)
+    async def fetch_greeting(value: Annotated[str, Depends(greeting)]) -> str:
+        return value
+
+    app.include_router(router)
+
+    @api.get('/')
+    async def endpoint(executor: Annotated[QueryExecutor, Depends(QueryExecutor)]) -> str:
+        return await executor.fetch(_FetchGreeting())
+
+    with pytest.raises(QueryNotRegisteredError):
+        asyncio.run(old_executor.fetch(_FetchGreeting()))
+    with pytest.raises(QueryNotRegisteredError):
+        asyncio.run(old_provider().fetch(_FetchGreeting()))
+
+    # Finalizing alone does not replace the graph installed on the host app.
+    new_provider = app.finalize()
+    assert new_provider is not old_provider
+    assert api.dependency_overrides[QueryExecutor] is old_provider
+    assert app.mount(api) is new_provider
+    with TestClient(api) as client:
+        response = client.get('/')
+    assert response.status_code == 200
+    assert response.json() == 'new dependency'
+
+
+def test_bind_executor_after_mount_reaches_both_async_and_sync_facades() -> None:
+    app = FastBFF()
+    api = FastAPI()
+    app.mount(api)
+    replacement = QueryExecutor()
+    app.bind(QueryExecutor, lambda: replacement)
+
+    @api.get('/')
+    async def endpoint(
+        executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
+        sync: Annotated[SyncQueryExecutor, Depends(SyncQueryExecutor)],
+    ) -> bool:
+        return executor is replacement and sync._inner is replacement
+
+    with TestClient(api) as client:
+        response = client.get('/')
+    assert response.status_code == 200
+    assert response.json() is True
