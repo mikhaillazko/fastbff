@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject query handlers with neither a query parameter nor an explicit query
+  type at registration. The error points to `@app.queries(QueryType)` or
+  `@router.queries(QueryType)` instead of accepting an unreachable handler.
 - Preserve each handler/resolver dependency declaration and let FastAPI own
   caching. Distinct implicit `Depends()` factories, repeated uncached
   dependencies, OAuth scopes, and yield lifetimes no longer collapse together.

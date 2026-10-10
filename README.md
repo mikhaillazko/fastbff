@@ -189,7 +189,9 @@ class FetchUser(Query[User]):
 def fetch_user(query: FetchUser) -> User: ...
 ```
 
-Parameterless queries pass the request type to the decorator:
+If the handler accepts a parameter annotated with a `Query` subclass, use
+`@app.queries`. If it has no query parameter (including handlers that only accept
+dependencies), pass the request type to the decorator:
 
 ```python
 class FetchAll(Query[list[User]]):
@@ -200,8 +202,10 @@ class FetchAll(Query[list[User]]):
 def fetch_all() -> list[User]: ...
 ```
 
-Return-type mismatches raise `QueryRegistrationError` at registration time, not at
-runtime.
+The same rule applies to `@router.queries`. Omitting both the query parameter and
+the explicit query type raises `QueryRegistrationError` immediately, with a hint
+to use `@app.queries(QueryType)` or `@router.queries(QueryType)`. Return-type
+mismatches also fail at registration time.
 
 ### `EntityQuery[K, V]`
 
@@ -523,7 +527,7 @@ mock.reset_mock()  # clear stubs; subsequent fetch() calls hit real @queries han
 All errors raised by the library subclass `FastBFFError`:
 
 - `RegistrationError` — base class for the registration-time errors below.
-  - `QueryRegistrationError` — bad `@queries` declaration (missing return type,
+  - `QueryRegistrationError` — bad `@queries` declaration (missing query or return type,
     return type does not match `Query[T]`, multiple `Query[T]` parameters, an
     `EntityQuery` without a discoverable ids field) or a duplicate registration of the
     same query function or query type (raised by both `@app.queries` and

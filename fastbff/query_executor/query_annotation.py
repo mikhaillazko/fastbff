@@ -128,17 +128,20 @@ class QueryAnnotation:
                 self.query_type = param_type
                 self.query_param_name = param_name
 
-        if self.query_type is not None:
-            expected_return = extract_query_return_type(self.query_type)
-            if (
-                expected_return is not None
-                and self.return_type != expected_return
-                and not _is_row_shaped(self.return_type)
-            ):
-                raise QueryRegistrationError(
-                    f'@queries {original_func.__name__}: return type {self.return_type} '
-                    f'does not match {self.query_type.__name__}[{expected_return}]',
-                )
+        if self.query_type is None:
+            handler_name = getattr(original_func, '__name__', type(original_func).__name__)
+            raise QueryRegistrationError(
+                f'@queries {handler_name!r}: handler has no Query parameter and no explicit query type. '
+                'Annotate a parameter with a Query subclass, or use @app.queries(QueryType) '
+                '(or @router.queries(QueryType)) for handlers without a query parameter.',
+            )
+
+        expected_return = extract_query_return_type(self.query_type)
+        if expected_return is not None and self.return_type != expected_return and not _is_row_shaped(self.return_type):
+            raise QueryRegistrationError(
+                f'@queries {original_func.__name__}: return type {self.return_type} '
+                f'does not match {self.query_type.__name__}[{expected_return}]',
+            )
 
         # Entity-level caching is explicit opt-in: only EntityQuery subclasses.
         self.is_entity: bool = False

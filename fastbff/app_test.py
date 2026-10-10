@@ -146,7 +146,7 @@ def test_include_router_raises_on_duplicate_function() -> None:
     router = QueryRouter()
     app = FastBFF()
 
-    def fetch_users(ids: frozenset[int]) -> dict[int, _UserDTO]:
+    def fetch_users(query: _FetchUsers) -> dict[int, _UserDTO]:
         return {}
 
     router.queries(fetch_users)

@@ -86,10 +86,6 @@ TestPyPI dry-run workflow, `.github/workflows/testpypi.yml`, shipped — see
 
 ## P3 — ergonomics / nits
 
-- `@app.queries(FetchAllUsers)` (decorator-factory form) vs
-  `@app.queries` is a subtle API split. Document the decision tree, or
-  detect parameterless handlers and emit a clear error pointing at the
-  explicit form when the user forgets.
 - `FastBFF` itself is usable as a `dependency_overrides_provider`.
   Document this — it makes custom test harnesses easier. (Likely
   subsumed by the P0 #2 rework.)

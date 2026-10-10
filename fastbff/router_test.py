@@ -2,10 +2,14 @@
 
 import asyncio
 from dataclasses import dataclass
+from typing import Annotated
 
 import pytest
+from fastapi import Depends
 
+from fastbff import FastBFF
 from fastbff import Query
+from fastbff import QueryRouter
 from fastbff.exceptions import QueryRegistrationError
 
 
@@ -61,6 +65,50 @@ def test_parameterless_handler_bound_via_decorator_factory(app) -> None:
 
     # Assert
     assert annotation.query_type is _FetchAllEntities
+    assert annotation.query_param_name is None
+
+
+@pytest.mark.parametrize('registrar_type', [FastBFF, QueryRouter])
+@pytest.mark.parametrize('handler_kind', ['sync', 'async', 'dependencies_only'])
+def test_handler_without_query_type_fails_registration_and_can_be_corrected(
+    registrar_type: type[FastBFF] | type[QueryRouter],
+    handler_kind: str,
+) -> None:
+    registrar = registrar_type()
+
+    def fetch_all() -> list[_Entity]:
+        return []
+
+    async def fetch_all_async() -> list[_Entity]:
+        return []
+
+    def get_value() -> str:
+        return 'value'
+
+    def fetch_all_with_dependency(value: Annotated[str, Depends(get_value)]) -> list[_Entity]:
+        return [_Entity(value=value)]
+
+    handler = {
+        'sync': fetch_all,
+        'async': fetch_all_async,
+        'dependencies_only': fetch_all_with_dependency,
+    }[handler_kind]
+
+    with pytest.raises(QueryRegistrationError, match='no Query parameter') as error:
+        registrar.queries(handler)
+
+    message = str(error.value)
+    assert handler.__name__ in message
+    assert '@app.queries(QueryType)' in message
+    assert '@router.queries(QueryType)' in message
+
+    # Failed registration must not leave a function behind that blocks retry.
+    assert registrar.queries(_FetchAllEntities)(handler) is handler
+    app = registrar if isinstance(registrar, FastBFF) else FastBFF()
+    if isinstance(registrar, QueryRouter):
+        app.include_router(registrar)
+    annotation = app.get_annotation_by_query_type(_FetchAllEntities)
+    assert annotation.original_func is handler
     assert annotation.query_param_name is None
 
 
