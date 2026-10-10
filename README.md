@@ -63,10 +63,12 @@ from fastbff import (
 
 # --- Domain -----------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class User:
     id: int
     name: str
+
 
 # --- Router -----------------------------------------------------------------
 
@@ -76,29 +78,36 @@ router = QueryRouter()
 # `EntityQuery[K, V]` opts into entity-level caching: overlapping id sets share
 # cached entries and only the missing ids are fetched.
 
+
 class FetchUsers(EntityQuery[int, User]):
     ids: frozenset[int]
+
 
 @router.queries
 def fetch_users(query: FetchUsers) -> dict[int, User]:
     return {i: User(id=i, name=f'u{i}') for i in query.ids}
+
 
 # --- Response model with a Resolve field -----------------------------------
 # The raw row value for `owner` (an id) is the key into FetchUsers' dict[int, User]
 # result. The render pipeline collects every owner id across the page and issues a
 # single bulk fetch.
 
+
 class TeamDTO(BaseModel):
     id: int
     owner: Annotated[User | None, Resolve(FetchUsers)]
+
 
 # --- Page-rendering query --------------------------------------------------
 # `Query[list[TeamDTO]]` is the output contract; the handler returns honest rows
 # (`list[dict]`) and the framework resolves + validates them to TeamDTO at the
 # dispatch boundary, planning a single bulk `fetch_users` call for the whole page.
 
+
 class FetchTeams(Query[list[TeamDTO]]):
     pass
+
 
 @router.queries(FetchTeams)
 def fetch_teams() -> list[dict]:
@@ -107,6 +116,7 @@ def fetch_teams() -> list[dict]:
         {'id': 2, 'owner': 20},
         {'id': 3, 'owner': 10},  # duplicate id → still just one DB call
     ]
+
 
 # --- HTTP route -------------------------------------------------------------
 
@@ -125,6 +135,7 @@ async def list_teams_async(
     query_executor: Annotated[QueryExecutor, Depends(QueryExecutor)],
 ) -> list[TeamDTO]:
     return await query_executor.fetch(FetchTeams())
+
 
 # --- Compose ----------------------------------------------------------------
 
@@ -173,9 +184,9 @@ from Pydantic's own generic metadata.
 class FetchUser(Query[User]):
     user_id: int
 
+
 @app.queries
-def fetch_user(query: FetchUser) -> User:
-    ...
+def fetch_user(query: FetchUser) -> User: ...
 ```
 
 Parameterless queries pass the request type to the decorator:
@@ -184,9 +195,9 @@ Parameterless queries pass the request type to the decorator:
 class FetchAll(Query[list[User]]):
     pass
 
+
 @app.queries(FetchAll)
-def fetch_all() -> list[User]:
-    ...
+def fetch_all() -> list[User]: ...
 ```
 
 Return-type mismatches raise `QueryRegistrationError` at registration time, not at
@@ -201,9 +212,9 @@ runtime.
 class FetchUsers(EntityQuery[int, User]):
     ids: frozenset[int]
 
+
 @app.queries
-def fetch_users(query: FetchUsers) -> dict[int, User]:
-    ...
+def fetch_users(query: FetchUsers) -> dict[int, User]: ...
 ```
 
 Overlapping ID sets are merged: a second call with ids `{2, 3, 4}` after the first with
@@ -258,7 +269,7 @@ an iterable of keys) into the `EntityQuery`'s `dict[K, V]` result:
 ```python
 class TeamDTO(BaseModel):
     id: int
-    owner: Annotated[User | None, Resolve(FetchUsers)]   # key = raw row['owner']
+    owner: Annotated[User | None, Resolve(FetchUsers)]  # key = raw row['owner']
 ```
 
 **Resolver form** — `Resolve(resolver=fn)`, for custom logic (filtering, deriving keys, or
@@ -271,6 +282,7 @@ plus a `QueryExecutor` injected by **type** (`executor: QueryExecutor`, no `Depe
 async def resolve_owner(ids: frozenset[int], executor: QueryExecutor) -> dict[int, User]:
     users = await executor.fetch(FetchUsers(ids=ids))
     return {i: u for i, u in users.items() if u.active}
+
 
 class TeamDTO(BaseModel):
     id: int
@@ -290,6 +302,13 @@ factory whose signature declares the union of every handler's and resolver's
 once per request and the executor hands the resolved values to each
 handler / resolver at dispatch time.
 
+Each dependency parameter retains its own declaration. FastAPI controls
+caching, implicit `Depends()` factories, `Security` scopes, and cleanup of
+`yield` dependencies. `use_cache=False` creates a value for each dependency
+occurrence when the executor is injected; it does not re-resolve dependencies
+on every `fetch()` call. All registered handlers' dependencies are resolved,
+including those belonging to queries the endpoint does not fetch.
+
 ```python
 @app.queries
 def fetch_users(query: FetchUsers, session: DBSession) -> dict[int, User]:
@@ -298,8 +317,8 @@ def fetch_users(query: FetchUsers, session: DBSession) -> dict[int, User]:
 ```
 
 `FastBFF` is a `dependency_overrides_provider` — its
-`dependency_overrides` dict is the same one FastAPI uses. The
-`app.bind(target, factory)` helper is a thin wrapper that writes into it
+`dependency_overrides` dict follows FastAPI's override protocol. The
+`app.bind(target, factory)` helper writes into it and every mounted app's dict
 and accepts both a bare class and its `Annotated[Class, Depends(Class)]`
 alias, mapping both to the same override key:
 
@@ -308,8 +327,21 @@ app.bind(QueryExecutor, lambda: shared_executor)
 app.bind(SomeService, lambda: FakeService())
 ```
 
-Bind *before* `app.mount(fastapi_app)` — `mount` copies overrides into
-the FastAPI app's `dependency_overrides` once.
+Bind before or after `app.mount(fastapi_app)`. Explicit executor bindings survive
+`finalize()` and repeated mounts. Each FastAPI app keeps its own override dict;
+unrelated entries are preserved. For matching keys, `mount()` and `bind()` apply
+fastbff's value. To override only one host app in a test, write to that app's
+`dependency_overrides` directly. Direct edits to the fastbff dict are copied on
+the next mount; use `bind()` for immediate propagation to all mounted apps.
+
+Register handlers and include routers before mounting where possible. If you
+add registrations later, call `mount()` again on each host app to install the
+new dependency graph. Existing provider callables and their executors retain their
+original query registry snapshot, so new handlers cannot run with old dependency
+metadata. Calling `finalize()` alone does not update a mounted host. Changes to
+bindings affect subsequent resolution, not dependencies already resolved for
+an in-flight request. An endpoint that uses `Depends(provide)` directly keeps
+that particular provider; remounting updates `Depends(QueryExecutor)` endpoints.
 
 ### Module organisation
 
@@ -332,8 +364,10 @@ from fastbff import FastBFF, QueryRouter
 # users/handlers.py
 router = QueryRouter()
 
+
 @router.queries
 def fetch_users(query: FetchUsers) -> dict[int, User]: ...
+
 
 # main.py
 app = FastBFF()
@@ -444,8 +478,10 @@ scalars]` loop inside `@queries` handlers:
 ```python
 from fastbff.sqlalchemy import SqlalchemyConverter
 
+
 def make_sqlalchemy_converter(session: DBSession) -> SqlalchemyConverter:
     return SqlalchemyConverter(session)
+
 
 SqlalchemyConverterDep = Annotated[SqlalchemyConverter, Depends(make_sqlalchemy_converter)]
 

@@ -2,13 +2,18 @@
 
 | Field      | Value                                       |
 |------------|---------------------------------------------|
-| Status     | Proposed                                    |
+| Status     | Accepted — updated 2026-10-11                |
 | Deciders   | maintainers                                 |
 | Date       | 2026-05-04                                  |
 | Supersedes | —                                           |
 | Related    | `TODO.md` P0 #2 (DI integration coupling)   |
 
 ## Context
+
+This context and the options below record the original proposal. The accepted
+decision and FastAPI 0.143.0 review at the end supersede the old signature-removal
+recommendation. Transformer references describe the pre-0.3 API; resolvers now
+join the dependency graph through `Resolve` (ADR 0002).
 
 `fastbff` integrates with FastAPI's DI by synthesising a single
 `provide_query_executor` factory at finalize time. The factory's
@@ -97,10 +102,9 @@ instead of patching `__signature__`:
 
 ```python
 src = (
-    "def provide_query_executor("
-    + ", ".join(f"{spec.name}: {ann_repr} = Depends({factory_repr})"
-                for spec in specs)
-    + "): return _build(...)"
+    'def provide_query_executor('
+    + ', '.join(f'{spec.name}: {ann_repr} = Depends({factory_repr})' for spec in specs)
+    + '): return _build(...)'
 )
 exec(src, globals_ns, local_ns)
 ```
@@ -138,7 +142,9 @@ def make_capturer(factory):
         value: Annotated[Any, Depends(factory)],
     ) -> None:
         request.state.fastbff_resolved[factory] = value
+
     return capturer
+
 
 # during app.mount(fastapi_app):
 deps = [Depends(make_capturer(f)) for f in self._unique_factories()]
@@ -298,6 +304,7 @@ def transform_owner(
 ) -> User | None:
     return qe.fetch(FetchUsers(ids=batch.ids)).get(owner_id)
 
+
 # `FetchUsers` not registered → app.finalize() raises with a message
 # pointing at the transformer, instead of the first request to a route
 # whose response model uses this transformer.
@@ -320,31 +327,82 @@ locals, anything that escapes intra-function reasoning.
 
 ## Recommendation
 
-**Phase 1 — ship Option A.** It is the cheapest credible answer to
-the surface concern in TODO P0 #2 (one fewer `__signature__` line,
-generated factory looks like real Python). No behaviour change, no
-test fallout, no DX impact. Estimate: half a day including tests.
-
-**Phase 2 — design Option D as a separate experiment.** It is the
-only option that improves something users feel (per-endpoint
-resolution cost, type-level documentation). The transitive closure
-problem is the only real design question; prototype it with explicit
-listing first (no closure inference) and measure DX before adding
-inference. If the explicit form feels acceptable, ship it. If not,
-pick (b) or (c) for inference. Do not commit to D before the
-prototype.
-
-**Phase 3 — only consider Option C if Option D's prototype reveals
-that we want fastbff to evolve faster than FastAPI's Depends
-semantics allow.** This is unlikely. C is a non-trivial rewrite for a
-benefit (zero version coupling) that has not bitten us in real
-usage.
-
-**Reject Option B.** It pays for route rewriting (the cost of D's
-mount step) without buying per-endpoint scoping (the value of D). The
-`request.state` plumbing introduces a new failure mode without a
-matching upside.
+Keep synthesized signatures and FastAPI-owned resolution. Implement correctness
+and lifecycle fixes first; prototype endpoint scoping separately. Neither source
+generation (Option A) nor a private dependency container (Option C) is needed.
 
 ## Decision
 
-To be filled in after maintainer review.
+### Dependency declarations
+
+`QueryExecutor` and `SyncQueryExecutor` have parameterless constructors, so
+their class signatures need no override. The two generated provider functions
+retain explicit `__signature__` metadata.
+
+Every handler/resolver dependency occurrence gets a separate generated parameter.
+Keep its original annotation and `Depends`/`Security` metadata. Do not deduplicate
+using `(dependency, use_cache)`: implicit factories both start as `None`, uncached
+occurrences must remain separate, and other metadata affects resolution.
+FastAPI decides which occurrences share values. Executor self-injection remains
+an internal sentinel, avoiding a circular dependency.
+
+`use_cache=False` applies when FastAPI injects the executor, not on each query
+dispatch. Per-fetch dependency lifetimes would require a separate design.
+
+### Binding and mounting
+
+- Track generated defaults separately from the effective override dictionary.
+  Re-finalization replaces previous defaults and preserves explicit overrides,
+  including those written directly to `dependency_overrides`.
+- `bind()` updates fastbff and all currently mounted applications. Weak references
+  avoid keeping discarded test applications alive.
+- Each host retains its own dictionary. `mount()` updates matching keys without
+  removing unrelated overrides; fastbff wins conflicts during mount or bind.
+  Host-local test overrides remain possible through the host dictionary.
+- Generated providers capture a query-registry snapshot alongside their dependency
+  index. Later registration requires remounting each host. Old providers and
+  existing executors keep a consistent graph. `finalize()` alone is local.
+- Direct edits to fastbff's override dictionary propagate on mount; `bind()` is
+  the API for immediate propagation. Already-resolved request values are unchanged.
+- Endpoints using `Depends(provide)` directly retain that callable. Remounting
+  updates the override used by `Depends(QueryExecutor)` and its sync facade.
+
+### FastAPI implementation review (2026-10-11)
+
+Latest published release reviewed: **0.143.0**, released October 8; the repository
+lockfile currently uses **0.141.1**. See the
+[release notes](https://fastapi.tiangolo.com/release-notes/#01430).
+
+In [`dependencies/utils.py`](https://github.com/fastapi/fastapi/blob/0.143.0/fastapi/dependencies/utils.py),
+`get_typed_signature()` uses `inspect.signature()`, and `get_dependant()` builds
+the dependency tree. `solve_dependencies()` reads current overrides, rebuilds
+replacement dependency trees, recursively resolves values, and manages generator
+cleanup using request/function exit stacks. Calling that internal solver directly
+would couple fastbff to private request-scope state.
+
+In [`dependencies/models.py`](https://github.com/fastapi/fastapi/blob/0.143.0/fastapi/dependencies/models.py),
+the cache key includes the callable, relevant OAuth scopes, and computed lifetime
+scope. `use_cache` controls reuse rather than being part of the key. This is why
+fastbff should forward complete declarations instead of maintaining its own key.
+
+[`routing.py`](https://github.com/fastapi/fastapi/blob/0.143.0/fastapi/routing.py)
+constructs route dependency graphs before requests. Our class-override approach
+supplies its generated graph at request time; direct provider dependencies would
+make that graph available when routes are constructed.
+
+### Future evolution — proposals, not implemented
+
+1. Prototype `Depends(app.executor_for(FetchTeams, FetchUsers))` returning a stable
+   callable. Compare it with the current class override: dependency calls,
+   reflection cost, OpenAPI output, and ergonomics. Avoid scanning or rewriting
+   routes. The current `mount()` return value already allows experiments with a
+   direct provider for the full registry.
+2. Infer query reachability from `Resolve(QueryType)`. Require explicit roots for
+   queries fetched from arbitrary handler/resolver bodies; do not assume reflection
+   can discover them. Report undeclared fetches clearly. Unused dependencies can
+   fail requests as well as add latency, so measure both isolation and performance.
+3. Add a dependency-version CI matrix alongside the Python matrix: a verified
+   lower bound, the lockfile, and latest releases. Include caching, security,
+   sync/async generator cleanup, streaming lifetimes, and override behavior.
+4. Keep FastAPI responsible for cleanup and request injection. Only consider an
+   independent container for a concrete non-HTTP use case with explicit semantics.

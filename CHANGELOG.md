@@ -5,6 +5,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Preserve each handler/resolver dependency declaration and let FastAPI own
+  caching. Distinct implicit `Depends()` factories, repeated uncached
+  dependencies, OAuth scopes, and yield lifetimes no longer collapse together.
+- Propagate `bind()` to every mounted FastAPI application. Preserve explicit
+  executor overrides across finalization and repeated mounting, without
+  replacing host override dictionaries or unrelated entries.
+- Snapshot registrations in generated providers so adding a handler cannot
+  pair its new registration with an old dependency graph. Remount each host
+  after adding handlers or routers to install the new graph.
+
 ## [0.3.0] - 2026-07-13
 
 Ground-up rework of the executor core and composition model (ADR 0002). This is
