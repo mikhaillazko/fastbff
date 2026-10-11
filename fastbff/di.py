@@ -35,7 +35,7 @@ QUERY_EXECUTOR_SENTINEL = object()
 
 @dataclass(frozen=True)
 class DepSpec:
-    """A single unique dependency pulled from the union of handler signatures."""
+    """One dependency occurrence from a handler or resolver signature."""
 
     synthetic_name: str
     annotation: Any
@@ -80,7 +80,11 @@ def collect_dep_specs(
     *,
     query_executor_type: type,
 ) -> tuple[list[DepSpec], HandlerDepIndex]:
-    """Walk *handlers* and dedup their ``Depends`` params into a shared spec list.
+    """Give every ``Depends`` parameter its own slot in the generated signature.
+
+    FastAPI owns dependency caching. Keeping occurrences separate preserves
+    implicit factories, ``use_cache=False``, Security scopes, and yield scopes
+    without duplicating FastAPI's cache-key and lifetime rules.
 
     Params typed as the project's :class:`QueryExecutor` are excluded from the
     synthesized signature (they're bound to the executor at dispatch time) —
@@ -89,13 +93,12 @@ def collect_dep_specs(
     ``app.dependency_overrides``.
 
     Returns:
-        (specs, handler_index) where ``specs`` is the deduped list of unique
-        dependencies and ``handler_index[func][arg_name]`` maps each handler
+        (specs, handler_index) where ``specs`` lists dependency occurrences
+        and ``handler_index[func][arg_name]`` maps each handler
         param to either the synthetic name (string) or the
         :data:`QUERY_EXECUTOR_SENTINEL`.
     """
     specs: list[DepSpec] = []
-    dedup: dict[tuple[Any, bool], str] = {}
     handler_index: HandlerDepIndex = {}
 
     for handler in handlers:
@@ -105,18 +108,14 @@ def collect_dep_specs(
                 per_handler[arg_name] = QUERY_EXECUTOR_SENTINEL
                 continue
             assert depends is not None
-            key = (depends.dependency, depends.use_cache)
-            synthetic = dedup.get(key)
-            if synthetic is None:
-                synthetic = f'__dep_{len(specs)}'
-                specs.append(
-                    DepSpec(
-                        synthetic_name=synthetic,
-                        annotation=annotation,
-                        depends=depends,
-                    ),
-                )
-                dedup[key] = synthetic
+            synthetic = f'__dep_{len(specs)}'
+            specs.append(
+                DepSpec(
+                    synthetic_name=synthetic,
+                    annotation=annotation,
+                    depends=depends,
+                ),
+            )
             per_handler[arg_name] = synthetic
         if per_handler:
             handler_index[handler] = per_handler
@@ -151,7 +150,7 @@ def build_provide_query_executor(
         Parameter(
             name=spec.synthetic_name,
             kind=Parameter.KEYWORD_ONLY,
-            annotation=Annotated[spec.annotation, Depends(spec.depends.dependency, use_cache=spec.depends.use_cache)]
+            annotation=Annotated[spec.annotation, spec.depends]
             if get_origin(spec.annotation) is not Annotated
             else spec.annotation,
         )

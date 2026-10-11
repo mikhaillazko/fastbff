@@ -58,11 +58,13 @@ class QueryExecutor:
 
     async def _call(self, handler, kwargs):
         if iscoroutinefunction(handler):
-            return await handler(**kwargs)                       # loop-native
+            return await handler(**kwargs)  # loop-native
         return await anyio.to_thread.run_sync(partial(handler, **kwargs))
+
 
 class SyncQueryExecutor:
     """For sync endpoints (already on an anyio worker thread)."""
+
     def fetch[T](self, query_obj: Query[T]) -> T:
         return anyio.from_thread.run(self._inner.fetch, query_obj)
 ```
@@ -105,12 +107,13 @@ User-facing API: the `@transformer` + `BatchArg` + `build_transform_annotated`
 triple is replaced by one field annotation.
 
 ```python
-class FetchUsers(EntityQuery[int, User]):        # see Decision 3
+class FetchUsers(EntityQuery[int, User]):  # see Decision 3
     ids: frozenset[int]
+
 
 class TeamDTO(BaseModel):
     id: int
-    owner: Annotated[User | None, Resolve(FetchUsers)]          # key = raw row["owner"]
+    owner: Annotated[User | None, Resolve(FetchUsers)]  # key = raw row["owner"]
     project: Annotated[Project | None, Resolve(FetchProjects)]
 ```
 
@@ -121,6 +124,7 @@ signature `(ids, deps...) -> dict[key, value]`, executed in Phase 2:
 async def resolve_owner(ids: frozenset[int], ex: QueryExecutor) -> dict[int, User]:
     users = await ex.fetch(FetchUsers(ids=ids))
     return {i: u for i, u in users.items() if u.active}
+
 
 owner: Annotated[User | None, Resolve(resolver=resolve_owner)]
 ```
@@ -157,7 +161,7 @@ whose query has *any* iterable field. Adding an unrelated iterable field
 (e.g. `statuses: set[str]`) silently changes cache semantics.
 
 ```python
-class FetchUsers(EntityQuery[int, User]):   # declares key/value types AND the ids field
+class FetchUsers(EntityQuery[int, User]):  # declares key/value types AND the ids field
     ids: frozenset[int]
 ```
 

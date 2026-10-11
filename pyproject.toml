@@ -116,3 +116,7 @@ unresolved-attribute = "warn"
 invalid-return-type = "warn"
 invalid-type-form = "warn"
 invalid-method-override = "warn"
+
+[tool.ty.terminal]
+# Keep intentionally downgraded diagnostics visible without failing CI.
+error-on-warning = false
